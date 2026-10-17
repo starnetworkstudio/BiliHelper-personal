@@ -1,105 +1,63 @@
 <?php declare(strict_types=1);
 
-/**
- *  Website: https://mudew.com/
- *  Author: Lkeme
- *  License: The MIT License
- *  Email: Useri@live.cn
- *  Updated: 2018 ~ 2026
- *
- *   _____   _   _       _   _   _   _____   _       _____   _____   _____
- *  |  _  \ | | | |     | | | | | | | ____| | |     |  _  \ | ____| |  _  \ &   ／l、
- *  | |_| | | | | |     | | | |_| | | |__   | |     | |_| | | |__   | |_| |   （ﾟ､ ｡ ７
- *  |  _  { | | | |     | | |  _  | |  __|  | |     |  ___/ |  __|  |  _  /  　 \、ﾞ ~ヽ   *
- *  | |_| | | | | |___  | | | | | | | |___  | |___  | |     | |___  | | \ \   　じしf_, )ノ
- *  |_____/ |_| |_____| |_| |_| |_| |_____| |_____| |_|     |_____| |_|  \_\
- */
-
 namespace Bhp\Bootstrap;
 
+use Bhp\App\ServiceContainer;
 use Bhp\Cache\Cache;
 use Bhp\Console\Console;
 use Bhp\Core\Core;
 use Bhp\Device\Device;
+use Bhp\Env\Env;
 use Bhp\FilterWords\FilterWords;
+use Bhp\Http\HttpClient;
 use Bhp\Log\Log;
 use Bhp\Notice\Notice;
 use Bhp\Plugin\Plugin;
+use Bhp\Profile\ProfileCacheResetService;
 use Bhp\Request\Request;
-use Bhp\Schedule\Schedule;
-use Bhp\Sign\Sign;
-use Bhp\Task\Task;
-use Bhp\TimeLock\TimeLock;
-use Bhp\User\User;
-use Bhp\Util\DesignPattern\SingleTon;
-use Bhp\Env\Env;
+use Bhp\Runtime\Runtime;
 use Bhp\Config\Config;
+use Bhp\Scheduler\Scheduler;
 
-class Bootstrap extends SingleTon
+final class Bootstrap
 {
     /**
-     * @var string
+     * 初始化 Bootstrap
+     * @param ServiceContainer $container
+     * @param bool $readOnlyRequest
      */
-    protected string $global_path;
-
-    /**
-     * @var string
-     */
-    protected string $profile_name;
-
-    /**
-     * @param string $global_path
-     * @param array $argv
-     * @return void
-     */
-    public function init(string $global_path, array $argv): void
-    {
-        $this->global_path = $global_path;
-        $this->profile_name = Console::parse($argv);
-        $this->superRegister();
-    }
-
-    public function superRegister(): void
-    {
-        // 核心
-        Core::getInstance($this->global_path, $this->profile_name);
-        // 环境
-        Env::getInstance();
-        // 排程
-        Schedule::getInstance();
-        // 插件中心
-        Plugin::getInstance();
-        // 配置
-        Config::getInstance();
-        // 缓存中心
-        Cache::getInstance();
-        // 日志
-        Log::getInstance();
-        // 设备/取前缀
-        Device::getInstance();
-        // 请求中心
-        Request::getInstance();
-        // 时间锁
-        TimeLock::getInstance();
-        // 过滤词
-        FilterWords::getInstance();
-        // 签名
-        Sign::getInstance();
-        // 用户
-        User::getInstance();
-        // 通知中心
-        Notice::getInstance();
-        // 任务中心
-        Task::getInstance();
-        // 控制台
-        Console::getInstance();
+    public function __construct(
+        private readonly ServiceContainer $container,
+        private readonly bool $readOnlyRequest = false,
+    ) {
     }
 
     /**
+     * 处理boot
      * @return void
      */
-    public function run(): void
+    public function boot(): void
     {
-        Console::getInstance()->register();
+        if ($this->readOnlyRequest) {
+            $this->container->get(Console::class);
+            return;
+        }
+
+        $this->container->get(Core::class);
+        $this->container->get(Runtime::class);
+        $this->container->get(Config::class);
+        $this->container->get(Cache::class);
+        $this->container->get(Log::class);
+        $this->container->get(Device::class);
+        $this->container->get(FilterWords::class);
+        $this->container->get(Console::class);
+        $this->container->get(Env::class);
+
+        $this->container->get(HttpClient::class);
+        $this->container->get(Request::class);
+        $this->container->get(Notice::class);
+        $this->container->get(StartupSelfCheck::class)->run();
+        $this->container->get(Plugin::class);
+        $this->container->get(Scheduler::class);
     }
 }

@@ -1,0 +1,82 @@
+<?php declare(strict_types=1);
+
+namespace Bhp\Plugin\Builtin\DynamicLottery;
+
+use Bhp\Api\Support\ApiJson;
+use Bhp\Login\AuthFailureClassifier;
+use Bhp\Request\Request;
+use Bhp\Util\Exceptions\NoLoginException;
+use Throwable;
+
+class DynamicLotteryReservationExecutor
+{
+    private AuthFailureClassifier $authFailureClassifier;
+
+    /**
+     * 初始化 DynamicLotteryReservationExecutor
+     * @param DynamicLotteryReservationService $reservationService
+     * @param Request $request
+     */
+    public function __construct(
+        private readonly DynamicLotteryReservationService $reservationService,
+        private readonly Request $request,
+    ) {
+        $this->authFailureClassifier = new AuthFailureClassifier();
+    }
+
+    /**
+     * @param array<string, mixed> $lottery
+     * @return array{success: bool, message: string, retryable?: bool}
+     */
+    public function reserve(
+        array $lottery,
+        string $csrf,
+        string $referer,
+    ): array {
+        $request = $this->reservationService->buildReserveRequest($lottery, $csrf, $referer);
+
+        $response = $this->postJson($request['url'], $request['payload'], $request['headers']);
+        $this->assertNotAuthFailure($response, sprintf(
+            '动态抽奖: 参与 ReserveId=%s 时账号未登录',
+            (string)($lottery['rid'] ?? ''),
+        ));
+
+        $result = $this->reservationService->evaluateReserveResponse($response, $lottery);
+        if (($response['code'] ?? 0) === -500) {
+            $result['retryable'] = true;
+        }
+
+        return $result;
+    }
+
+    /**
+     * @param array<string, int|string> $payload
+     * @param array<string, string> $headers
+     * @return array<string, mixed>
+     */
+    protected function postJson(string $url, array $payload, array $headers): array
+    {
+        try {
+            $raw = $this->request->postText('pc', $url, $payload, $headers);
+        } catch (NoLoginException $exception) {
+            throw $exception;
+        } catch (Throwable $throwable) {
+            return [
+                'code' => -500,
+                'message' => 'dynamic_lottery.reserve 请求失败: ' . $throwable->getMessage(),
+                'data' => [],
+            ];
+        }
+
+        return ApiJson::decode($raw, 'dynamic_lottery.reserve');
+    }
+
+    /**
+     * @param array<string, mixed> $response
+     * @throws NoLoginException
+     */
+    protected function assertNotAuthFailure(array $response, string $fallbackMessage): void
+    {
+        $this->authFailureClassifier->assertNotAuthFailure($response, $fallbackMessage);
+    }
+}

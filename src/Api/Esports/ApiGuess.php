@@ -1,77 +1,54 @@
 <?php declare(strict_types=1);
 
-/**
- *  Website: https://mudew.com/
- *  Author: Lkeme
- *  License: The MIT License
- *  Email: Useri@live.cn
- *  Updated: 2018 ~ 2026
- *
- *   _____   _   _       _   _   _   _____   _       _____   _____   _____
- *  |  _  \ | | | |     | | | | | | | ____| | |     |  _  \ | ____| |  _  \ &   ／l、
- *  | |_| | | | | |     | | | |_| | | |__   | |     | |_| | | |__   | |_| |   （ﾟ､ ｡ ７
- *  |  _  { | | | |     | | |  _  | |  __|  | |     |  ___/ |  __|  |  _  /  　 \、ﾞ ~ヽ   *
- *  | |_| | | | | |___  | | | | | | | |___  | |___  | |     | |___  | | \ \   　じしf_, )ノ
- *  |_____/ |_| |_____| |_| |_| |_| |_____| |_____| |_|     |_____| |_|  \_\
- */
-
 namespace Bhp\Api\Esports;
 
+use Bhp\Api\Support\AbstractApiClient;
 use Bhp\Request\Request;
-use Bhp\User\User;
 
-class ApiGuess
+class ApiGuess extends AbstractApiClient
 {
     /**
-     * 获取赛事竞猜
-     * @param int $pn
-     * @param int $ps
-     * @return array
+     * 初始化 ApiGuess
+     * @param Request $request
      */
-    public static function collectionQuestion(int $pn, int $ps = 50): array
-    {
-        $url = 'https://api.bilibili.com/x/esports/guess/collection/question';
-        $payload = [
-            'pn' => $pn,
-            'ps' => $ps,
-            'stime' => date("Y-m-d H:i:s", strtotime(date("Y-m-d", time()))),
-            'etime' => date("Y-m-d H:i:s", strtotime(date("Y-m-d", time())) + 86400 - 1)
-        ];
-        $headers = [
-            'origin' => 'https://www.bilibili.com',
-            'referer' => 'https://www.bilibili.com/v/game/match/competition',
-        ];
-        return Request::getjSON(true, 'pc', $url, $payload, $headers);
+    public function __construct(
+        Request $request,
+    ) {
+        parent::__construct($request);
     }
 
     /**
-     * 竞猜
-     * @param int $oid
-     * @param int $main_id
-     * @param int $detail_id
-     * @param int $count
-     * @return array
+     * @return array<string, mixed>
      */
-    public static function guessAdd(int $oid, int $main_id, int $detail_id, int $count): array
+    public function collectionQuestion(int $pn, int $ps = 50): array
     {
-        $user = User::parseCookie();
-        //
-        $url = 'https://api.bilibili.com/x/esports/guess/add';
-        $payload = [
-            'oid' => $oid,
-            'main_id' => $main_id,
-            'detail_id' => $detail_id,
-            'count' => $count,
-            'is_fav' => 0,
-            'csrf' => $user['csrf'],
-            'csrf_token' => $user['csrf'],
-        ];
-        $headers = [
+        return $this->decodeGet('pc', 'https://api.bilibili.com/x/esports/guess/collection/question', [
+            'pn' => $pn,
+            'ps' => $ps,
+            'stime' => date('Y-m-d H:i:s', strtotime(date('Y-m-d', time()))),
+            'etime' => date('Y-m-d H:i:s', strtotime(date('Y-m-d', time())) + 86400 - 1),
+        ], [
             'origin' => 'https://www.bilibili.com',
-            'referer' => 'https://www.bilibili.com/v/game/match/competition'
-        ];
-        return Request::postJson(true, 'pc', $url, $payload, $headers);
+            'referer' => 'https://www.bilibili.com/v/game/match/competition',
+        ], 'esports.guess.collection_question');
     }
 
-
+    /**
+     * @return array<string, mixed>
+     */
+    public function guessAdd(int $oid, int $mainId, int $detailId, int $count): array
+    {
+        return $this->decodePost('pc', 'https://api.bilibili.com/x/esports/guess/add', [
+            'oid' => $oid,
+            'main_id' => $mainId,
+            'detail_id' => $detailId,
+            'count' => $count,
+            'is_fav' => 0,
+            'csrf' => $this->request()->csrfValue(),
+            'csrf_token' => $this->request()->csrfValue(),
+        ], [
+            'origin' => 'https://www.bilibili.com',
+            'referer' => 'https://www.bilibili.com/v/game/match/competition',
+        ], 'esports.guess.add');
+    }
 }

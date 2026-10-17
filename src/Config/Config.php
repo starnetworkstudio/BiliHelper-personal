@@ -17,17 +17,35 @@
 
 namespace Bhp\Config;
 
+use Bhp\Profile\ProfileContext;
 use Bhp\Util\Resource\BaseResource;
 
 class Config extends BaseResource
 {
     /**
+     * 初始化 Config
+     * @param ProfileContext $profileContext
      * @param string $filename
-     * @return void
      */
-    public function init(string $filename = 'user.ini'): void
+    public function __construct(
+        private readonly ProfileContext $profileContext,
+        string $filename = 'user.ini',
+    )
     {
+        $targetPath = $this->getFilePath($filename);
+        $schema = new ConfigSchemaDefinition();
+        $result = (new ConfigTemplateSynchronizer())->synchronize($schema->exampleConfigPath(), $targetPath);
+        if ($result->changed) {
+            $message = '配置模板已同步: ' . basename($targetPath);
+            if ($result->backupPath !== null) {
+                $message .= ' (backup: ' . basename($result->backupPath) . ')';
+            }
+
+            fwrite(STDOUT, $message . PHP_EOL);
+        }
+
         $this->loadResource($filename, 'ini');
+        (new ConfigRuntimeValidator($this, $schema))->validate();
     }
 
     /**
@@ -37,6 +55,6 @@ class Config extends BaseResource
      */
     protected function getFilePath(string $filename): string
     {
-        return str_replace("\\", "/", PROFILE_CONFIG_PATH . $filename);
+        return str_replace("\\", "/", $this->profileContext->configPath() . $filename);
     }
 }

@@ -16,20 +16,39 @@
  */
 
 namespace Bhp\Util\GhProxy;
-class GhProxy
+
+use Bhp\Runtime\AppContext;
+
+final class GhProxy
 {
+    /**
+     * 初始化 GhProxy
+     * @param AppContext $context
+     */
+    public function __construct(
+        private readonly AppContext $context,
+    ) {
+    }
+
     /**
      * @param string $url
      * @return string
      */
-    public static function mirror(string $url): string
+    public function mirror(string $url): string
     {
-        if (!getEnable('network_github') || $url == '') return $url;
-        //
-        if (($mirror = getConf('network_github.mirror')) != '') {
+        if ($url === '') {
+            return $url;
+        }
+
+        if (!$this->context->config('network_github.enable', false, 'bool')) {
+            return $url;
+        }
+
+        $mirror = trim((string)$this->context->config('network_github.mirror', '', 'string'));
+        if ($mirror !== '') {
             return $mirror . $url;
         }
-        //
+
         return $url;
     }
 }

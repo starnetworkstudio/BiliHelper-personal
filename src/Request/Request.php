@@ -1,577 +1,773 @@
 <?php declare(strict_types=1);
 
-/**
- *  Website: https://mudew.com/
- *  Author: Lkeme
- *  License: The MIT License
- *  Email: Useri@live.cn
- *  Updated: 2018 ~ 2026
- *
- *   _____   _   _       _   _   _   _____   _       _____   _____   _____
- *  |  _  \ | | | |     | | | | | | | ____| | |     |  _  \ | ____| |  _  \ &   ／l、
- *  | |_| | | | | |     | | | |_| | | |__   | |     | |_| | | |__   | |_| |   （ﾟ､ ｡ ７
- *  |  _  { | | | |     | | |  _  | |  __|  | |     |  ___/ |  __|  |  _  /  　 \、ﾞ ~ヽ   *
- *  | |_| | | | | |___  | | | | | | | |___  | |___  | |     | |___  | | \ \   　じしf_, )ノ
- *  |_____/ |_| |_____| |_| |_| |_| |_____| |_____| |_|     |_____| |_|  \_\
- */
-
 namespace Bhp\Request;
 
 use Bhp\Cache\Cache;
-use Bhp\Log\Log;
-use Bhp\Notice\Notice;
-use Bhp\Util\ArrayR\ArrayR;
-use Bhp\Util\DesignPattern\SingleTon;
-use Bhp\Util\Exceptions\MethodNotFoundException;
+use Bhp\Http\HttpClient;
+use Bhp\Http\HttpResponse;
+use Bhp\Http\RequestOptions;
+use Bhp\Runtime\AppContext;
+use Bhp\Util\Exceptions\RequestException;
 use Bhp\Util\Exceptions\ResponseEmptyException;
 use Bhp\Util\Fake\Fake;
-use Exception;
-use GuzzleHttp\Client;
-use GuzzleHttp\Exception\RequestException;
-use Psr\Http\Message\ResponseInterface;
+use RuntimeException;
+use Throwable;
 
-/**
- * @method static get(string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0)
- * @method static getResponse(string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0)
- * @method static getJson(?bool $associative, string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0)
- * @method static post(string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0)
- * @method static postResponse(string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0)
- * @method static postJson(?bool $associative, string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0)
- * @method static put(string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0)
- * @method static putResponse(string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0)
- * @method static putJson(?bool $associative, string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0)
- */
-class Request extends SingleTon
+class Request
 {
-    /**
-     * @var array
-     */
-    protected array $caches;
+    private const CACHE_SCOPE = 'Request';
 
     /**
-     * @var Client|null
+     * @var array<string, array<string, mixed>>
      */
-    protected ?Client $client = null;
+    protected array $caches = [];
 
-    /**
-     * @var array
-     */
-    protected array $retry_times;
-
-    /**
-     * @var float
-     */
     protected float $timeout;
-
-    /**
-     * @var string|null
-     */
     protected ?string $buvid = null;
+    private readonly RequestRetryPolicy $retryPolicy;
+    private readonly RequestFailureClassifier $failureClassifier;
+    private readonly \Closure $sleep;
 
     /**
-     * @param int $min_rt
-     * @param int $max_rt
+     * 初始化 Request
+     * @param HttpClient $httpClient
+     * @param AppContext $context
+     * @param Cache $cache
+     * @param RequestRetryPolicy $retryPolicy
+     * @param callable $sleep
      * @param float $timeout
-     * @return void
      */
-    public function init(int $min_rt = 0, int $max_rt = 40, float $timeout = 30.0): void
-    {
-        Cache::initCache();
-        $this->retry_times = range($min_rt, $max_rt);
+    public function __construct(
+        protected readonly HttpClient $httpClient,
+        protected readonly AppContext $context,
+        protected readonly Cache $cache,
+        ?RequestRetryPolicy $retryPolicy = null,
+        ?callable $sleep = null,
+        float $timeout = 30.0,
+    ) {
+        $this->cache->initializeScope(self::CACHE_SCOPE);
+        $this->retryPolicy = $retryPolicy ?? new RequestRetryPolicy();
+        $this->failureClassifier = new RequestFailureClassifier();
+        $this->sleep = $sleep !== null
+            ? \Closure::fromCallable($sleep)
+            : static function (float $seconds): void {
+                if ($seconds <= 0.0) {
+                    return;
+                }
+
+                usleep((int)round($seconds * 1_000_000));
+            };
         $this->timeout = $timeout;
     }
 
     /**
+     * 处理buvid值
      * @return string
      */
-    public static function getBuvid(): string
+    public function buvidValue(): string
     {
-        return self::getInstance()->buvid;
-    }
-
-
-    /**
-     * 初始化客户端
-     * @param string $request_id
-     * @param array $config
-     * @return Request
-     */
-    protected function withClient(string $request_id, array $config = []): static
-    {
-        if (is_null($this->client)) {
-            $this->client = new Client($config);
+        if ($this->buvid === null) {
+            $cached = $this->cache->pull('buvid', self::CACHE_SCOPE);
+            $this->buvid = is_string($cached) && $cached !== '' ? $cached : Fake::buvid();
+            $this->cache->put('buvid', $this->buvid, self::CACHE_SCOPE);
         }
-        // clone 对象深拷贝
-        $this->setRequest($request_id, 'client', clone $this->client);
-        return $this;
+
+        return $this->buvid;
     }
 
     /**
-     * 请求地址
-     * @param string $request_id
-     * @param string $url
-     * @return $this
+     * 处理csrf值
+     * @return string
      */
-    protected function withUrl(string $request_id, string $url): static
+    public function csrfValue(): string
     {
-        $this->setRequest($request_id, 'url', $url);
-        return $this;
+        return $this->context->csrf();
     }
 
     /**
-     * 请求方式
-     * @param string $request_id
-     * @param string $method
-     * @return $this
+     * 处理UID值
+     * @return string
      */
-    protected function withMethod(string $request_id, string $method): static
+    public function uidValue(): string
     {
-        $this->setRequest($request_id, 'method', $method);
-        return $this;
+        return $this->context->uid();
     }
 
     /**
-     * 请求头
-     * @param string $request_id
-     * @param string $os
-     * @param array $headers
-     * @return $this
+     * 处理sid值
+     * @return string
      */
-    protected function withHeaders(string $request_id, string $os = 'app', array $headers = []): static
+    public function sidValue(): string
     {
-        // 从缓存中加载 如果存在就赋值 否则默认值
-        if (is_null($this->buvid)) {
-            $this->buvid = ($tmp = Cache::get('buvid')) ? $tmp : Fake::buvid();
-            Cache::set('buvid', $this->buvid);
-        }
-        //
-        $app_headers = [
-            'env' => 'prod',
-            'APP-KEY' => 'android',
-            'Buvid' => $this->buvid,
-            'Accept' => '*/*',
-            'Accept-Encoding' => 'gzip',
-            'Accept-Language' => 'zh-cn',
-            'Connection' => 'keep-alive',
-            'User-Agent' => getDevice('platform.headers.app_ua'),
-            // 'Content-Type' => 'application/x-www-form-urlencoded',
-            // 'User-Agent' => 'Mozilla/5.0 BiliDroid/5.51.1 (bbcallen@gmail.com)',
-            // 'Referer' => 'https://live.bilibili.com/',
+        return $this->context->sid();
+    }
+
+    /**
+     * 处理签名AndroidPayload
+     * @param array $payload
+     * @return array
+     */
+    public function signAndroidPayload(array $payload): array
+    {
+        $appKey = base64_decode((string)$this->context->device('app.bili_a.app_key_n'));
+        $appSecret = base64_decode((string)$this->context->device('app.bili_a.secret_key_n'));
+        $default = [
+            'access_key' => $this->context->auth('access_token'),
+            'actionKey' => 'appkey',
+            'appkey' => $appKey,
+            'build' => $this->context->device('app.bili_a.build'),
+            'channel' => $this->context->device('app.bili_a.channel'),
+            'device' => $this->context->device('app.bili_a.device'),
+            'mobi_app' => $this->context->device('app.bili_a.mobi_app'),
+            'platform' => $this->context->device('app.bili_a.platform'),
+            'c_locale' => 'zh_CN',
+            's_locale' => 'zh_CN',
+            'disable_rcmd' => '0',
+            'ts' => time(),
         ];
-        //
-        $pc_headers = [
-            'Accept' => "application/json, text/plain, */*",
-            'Accept-Encoding' => 'gzip, deflate',
-            'Accept-Language' => "zh-CN,zh;q=0.9",
-            'User-Agent' => getDevice('platform.headers.pc_ua'),
-            // 'Content-Type' => 'application/x-www-form-urlencoded',
-            // 'Referer' => 'https://live.bilibili.com/',
-        ];
-        //
-        $other_headers = [
-            'User-Agent' => getDevice('platform.headers.other_ua'),
-        ];
-        $default_headers = ${$os . "_headers"} ?? $other_headers;
-        if (in_array($os, ['app', 'pc']) && getU('cookie') != "") {
-            // patch cookie
-            if ($os == 'pc' && getU('pc_cookie') != "") {
-                $default_headers['Cookie'] = getU('pc_cookie');
-            } else {
-                $default_headers['Cookie'] = getU('cookie');
-            }
-        }
-        //
-        $this->setRequest($request_id, 'headers', array_merge($default_headers, $headers));
-        return $this;
+
+        return self::signPayload(array_merge($payload, $default), (string)$appSecret);
     }
 
     /**
-     * 客户端配置
-     * @param string $request_id
-     * @param array $add_options
-     * @param float $timeout
-     * @return Request
+     * 处理签名登录Payload
+     * @param array $payload
+     * @return array
      */
-    protected function withOptions(string $request_id, array $add_options, float $timeout = 30.0): static
+    public function signLoginPayload(array $payload): array
     {
-        $default_options = [
-            // 'connect_timeout' => 10,
-            // 'debug' => false,
-            'headers' => $this->getRequest($request_id, 'headers'),
-            'timeout' => $timeout,
-            'http_errors' => false,
-            'verify' => getConf('network_ssl.verify', false, 'bool'),
-        ];
-        if (getEnable('network_proxy')) {
-            $default_options['proxy'] = getConf('network_proxy.proxy');
-        }
-        //
-        $this->setRequest($request_id, 'options', array_merge($default_options, $add_options));
-        return $this;
-
+        return match ((int)$this->context->config('login_mode.mode')) {
+            1, 2 => $this->signAndroidPayload($payload),
+            default => $this->signCommonPayload($payload),
+        };
     }
 
     /**
-     * 处理请求
-     * @param string $request_id
-     * @return ResponseInterface
+     * 处理签名CommonPayload
+     * @param array $payload
+     * @param bool $includeStatistics
+     * @return array
      */
-    protected function handle(string $request_id): ResponseInterface
+    public function signCommonPayload(array $payload, bool $includeStatistics = false): array
     {
-        $client = (object)$this->getRequest($request_id, 'client');
-        $url = (string)$this->getRequest($request_id, 'url');
-        $method = (string)$this->getRequest($request_id, 'method');
-        $options = (array)$this->getRequest($request_id, 'options');
-        //
-        foreach ($this->retry_times as $retry) {
-            try {
-                // $response = $this->client->get($url, $options);
-                // $response = $this->client->$method($url, $options);
-                // 稍有性能损耗，不过影响不大
-                $response = call_user_func_array([$client, $method], [$url, $options]);
-                if (is_null($response) or empty($response)) throw new ResponseEmptyException("Value IsEmpty");
-                return $response;
-            } catch (RequestException $e) {
-                // var_dump($e->getRequest());
-                if ($e->hasResponse()) var_dump($e->getResponse());
-            } catch (ResponseEmptyException|Exception $e) {
-                // $e->getHandlerContext()
-                // var_dump($e);
-            }
-            Log::warning("Target -> URL: $url METHOD: $method");
-            Log::warning("CURl -> RETRY: $retry ERROR: {$e->getMessage()} ERRNO: {$e->getCode()} STATUS:  Waiting for recovery!");
-            sleep(15);
+        $appKey = base64_decode((string)$this->context->device('app.bili_a.app_key'));
+        $appSecret = base64_decode((string)$this->context->device('app.bili_a.secret_key'));
+        $default = [
+            'access_key' => $this->context->auth('access_token'),
+            'actionKey' => 'appkey',
+            'appkey' => $appKey,
+            'build' => $this->context->device('app.bili_a.build'),
+            'device' => $this->context->device('app.bili_a.device'),
+            'mobi_app' => $this->context->device('app.bili_a.mobi_app'),
+            'platform' => $this->context->device('app.bili_a.platform'),
+            'c_locale' => 'zh_CN',
+            's_locale' => 'zh_CN',
+            'disable_rcmd' => '0',
+            'ts' => time(),
+        ];
+        if ($includeStatistics) {
+            $default['statistics'] = $this->context->device('app.bili_a.statistics');
         }
-        Notice::push('network_error','客户端出现网络波动或异常错误，已经尝试重试多次，但是依然无法恢复，请检查网络是否正常！');
-        failExit('网络异常，超出最大尝试次数，退出程序~');
+
+        return self::signPayload(array_merge($payload, $default), (string)$appSecret);
     }
 
     /**
-     * Method GetResponse
+     * 获取响应Instance
      * @param string $os
      * @param string $url
      * @param array $params
      * @param array $headers
      * @param float $timeout
-     * @return ResponseInterface
+     * @return HttpResponse
      */
-    protected static function _getResponse(string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0): ResponseInterface
+    public function getResponseInstance(string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0): HttpResponse
     {
-        //
-        $rid = self::getInstance()->startRequest();
-        //
-        Log::debug("[GET#$rid] $url ", $params);
-        //
-        $payload['query'] = count($params) ? $params : [];
-        //
-        $response = self::getInstance()
-            ->withClient($rid)
-            ->withUrl($rid, $url)
-            ->withMethod($rid, 'get')
-            ->withHeaders($rid, $os, $headers)
-            ->withOptions($rid, $payload, $timeout)
-            ->handle($rid);
-        //
-        self::getInstance()->stopRequest($rid);
-        //
-        Log::debug("[GET#$rid] " . $response->getBody());
-        //
-        return $response;
+        $requestId = $this->startRequest();
+        $this->context->log()->recordDebug("[GET#{$requestId}] {$url}", $params);
+
+        try {
+            $response = $this
+                ->withUrl($requestId, $url)
+                ->withMethod($requestId, 'get')
+                ->withHeaders($requestId, $os, $headers)
+                ->withOptions($requestId, ['query' => $params], $timeout)
+                ->handle($requestId);
+
+            $this->context->log()->recordDebug("[GET#{$requestId}] " . $response->getBody());
+
+            return $response;
+        } finally {
+            $this->stopRequest($requestId);
+        }
     }
 
     /**
-     * Method Get
-     * @param mixed ...$params
-     * @return string
-     */
-    protected static function _get(mixed ...$params): string
-    {
-        $response = self::getResponse(...$params);
-        return (string)$response->getBody();
-    }
-
-    /**
-     * Method GetJson
-     * @param bool|null $associative
-     * @param mixed ...$params
-     * @return mixed
-     */
-    protected static function _getJson(?bool $associative = null, mixed...$params): mixed
-    {
-        $response = self::get(...$params);
-        // JSON_UNESCAPED_UNICODE 当该参数为 TRUE 时，将返回 array 而非 object 。
-        return json_decode($response, $associative);
-    }
-
-    /**
-     * Method PostResponse
-     * @param $os
-     * @param $url
+     * 获取Text
+     * @param string $os
+     * @param string $url
      * @param array $params
      * @param array $headers
      * @param float $timeout
-     * @return ResponseInterface
-     */
-    protected static function _postResponse($os, $url, array $params = [], array $headers = [], float $timeout = 30.0): ResponseInterface
-    {
-        //
-        $rid = self::getInstance()->startRequest();
-        //
-        Log::debug("[POST#$rid] $url ", $params);
-        //
-        $payload['form_params'] = count($params) ? $params : [];
-        //
-        $response = self::getInstance()
-            ->withClient($rid)
-            ->withUrl($rid, $url)
-            ->withMethod($rid, 'post')
-            ->withHeaders($rid, $os, $headers)
-            ->withOptions($rid, $payload, $timeout)
-            ->handle($rid);
-        //
-        self::getInstance()->stopRequest($rid);
-        //
-        Log::debug("[POST#$rid] " . $response->getBody());
-        //
-        return $response;
-    }
-
-    /**
-     * Method Post
-     * @param mixed ...$params
      * @return string
      */
-    protected static function _post(mixed ...$params): string
+    public function getText(string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0): string
     {
-        $response = self::postResponse(...$params);
-        return (string)$response->getBody();
+        return $this->getResponseInstance($os, $url, $params, $headers, $timeout)->getBody();
     }
 
     /**
-     * Method PostJson
-     * @param bool|null $associative
-     * @param mixed ...$params
-     * @return mixed
-     */
-    protected static function _postJson(?bool $associative = null, mixed...$params): mixed
-    {
-        $response = self::post(...$params);
-        // JSON_UNESCAPED_UNICODE
-        return json_decode($response, $associative);
-    }
-
-    /**
-     * Method PutResponse
-     * @param $os
-     * @param $url
+     * 处理post响应Instance
+     * @param string $os
+     * @param string $url
      * @param array $params
      * @param array $headers
      * @param float $timeout
-     * @return ResponseInterface
+     * @return HttpResponse
      */
-    protected static function _putResponse($os, $url, array $params = [], array $headers = [], float $timeout = 30.0): ResponseInterface
+    public function postResponseInstance(string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0): HttpResponse
     {
-        //
-        $rid = self::getInstance()->startRequest();
-        //
-        Log::debug("[PUT#$rid] $url ", $params);
-        //
-        $payload['json'] = count($params) ? $params : [];
-        //
-        $response = self::getInstance()
-            ->withClient($rid)
-            ->withUrl($rid, $url)
-            ->withMethod($rid, 'post')
-            ->withHeaders($rid, $os, $headers)
-            ->withOptions($rid, $payload, $timeout)
-            ->handle($rid);
-        //
-        self::getInstance()->stopRequest($rid);
-        //
-        Log::debug("[PUT#$rid] " . $response->getBody());
-        //
-        return $response;
+        $requestId = $this->startRequest();
+        $this->context->log()->recordDebug("[POST#{$requestId}] {$url}", $params);
+
+        try {
+            $response = $this
+                ->withUrl($requestId, $url)
+                ->withMethod($requestId, 'post')
+                ->withHeaders($requestId, $os, $headers)
+                ->withOptions($requestId, ['form_params' => $params], $timeout)
+                ->handle($requestId);
+
+            $this->context->log()->recordDebug("[POST#{$requestId}] " . $response->getBody());
+
+            return $response;
+        } finally {
+            $this->stopRequest($requestId);
+        }
     }
 
     /**
-     * Method Put
-     * @param mixed ...$params
-     * @return string
-     */
-    protected static function _put(mixed ...$params): string
-    {
-        $response = self::putResponse(...$params);
-        return (string)$response->getBody();
-    }
-
-    /**
-     * Method PutJson
-     * @param bool|null $associative
-     * @param mixed ...$params
-     * @return mixed
-     */
-    protected static function _putJson(?bool $associative = null, mixed...$params): mixed
-    {
-        $response = self::put(...$params);
-        // JSON_UNESCAPED_UNICODE
-        return json_decode($response, $associative);
-    }
-
-
-    /**
-     * 下载文件
-     * @param $os
-     * @param $url
-     * @param string $filepath
+     * 处理postText
+     * @param string $os
+     * @param string $url
      * @param array $params
      * @param array $headers
      * @param float $timeout
-     * @return mixed
+     * @return string
      */
-    public static function download($os, $url, string $filepath, array $params = [], array $headers = [], float $timeout = 600.0): string
+    public function postText(string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0): string
     {
-        $params = array_merge($params, [
-            'sink' => $filepath,
+        return $this->postResponseInstance($os, $url, $params, $headers, $timeout)->getBody();
+    }
+
+    /**
+     * 处理postTextWithQuery
+     * @param string $os
+     * @param string $url
+     * @param array $formParams
+     * @param array $query
+     * @param array $headers
+     * @param float $timeout
+     * @return string
+     */
+    public function postTextWithQuery(
+        string $os,
+        string $url,
+        array $formParams = [],
+        array $query = [],
+        array $headers = [],
+        float $timeout = 30.0,
+    ): string {
+        $requestId = $this->startRequest();
+        $this->context->log()->recordDebug("[POST_QUERY#{$requestId}] {$url}", [
+            'query' => $query,
+            'form' => $formParams,
         ]);
-        return self::get($os, $url, $params, $headers, $timeout);
+
+        try {
+            $response = $this
+                ->withUrl($requestId, $url)
+                ->withMethod($requestId, 'post')
+                ->withHeaders($requestId, $os, $headers)
+                ->withOptions($requestId, [
+                    'query' => $query,
+                    'form_params' => $formParams,
+                ], $timeout)
+                ->handle($requestId);
+
+            $this->context->log()->recordDebug("[POST_QUERY#{$requestId}] " . $response->getBody());
+
+            return $response->getBody();
+        } finally {
+            $this->stopRequest($requestId);
+        }
     }
 
     /**
-     * 单次请求
+     * 处理postJSONBodyText
+     * @param string $os
+     * @param string $url
+     * @param array $params
+     * @param array $headers
+     * @param float $timeout
+     * @return string
+     */
+    public function postJsonBodyText(string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0): string
+    {
+        $requestId = $this->startRequest();
+        $this->context->log()->recordDebug("[POST_JSON#{$requestId}] {$url}", $params);
+
+        try {
+            $response = $this
+                ->withUrl($requestId, $url)
+                ->withMethod($requestId, 'post')
+                ->withHeaders($requestId, $os, $headers)
+                ->withOptions($requestId, ['json' => $params], $timeout)
+                ->handle($requestId);
+
+            $this->context->log()->recordDebug("[POST_JSON#{$requestId}] " . $response->getBody());
+
+            return $response->getBody();
+        } finally {
+            $this->stopRequest($requestId);
+        }
+    }
+
+    /**
+     * 处理put响应Instance
+     * @param string $os
+     * @param string $url
+     * @param array $params
+     * @param array $headers
+     * @param float $timeout
+     * @return HttpResponse
+     */
+    public function putResponseInstance(string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0): HttpResponse
+    {
+        $requestId = $this->startRequest();
+        $this->context->log()->recordDebug("[PUT#{$requestId}] {$url}", $params);
+
+        try {
+            $response = $this
+                ->withUrl($requestId, $url)
+                ->withMethod($requestId, 'put')
+                ->withHeaders($requestId, $os, $headers)
+                ->withOptions($requestId, ['json' => $params], $timeout)
+                ->handle($requestId);
+
+            $this->context->log()->recordDebug("[PUT#{$requestId}] " . $response->getBody());
+
+            return $response;
+        } finally {
+            $this->stopRequest($requestId);
+        }
+    }
+
+    /**
+     * 处理putText
+     * @param string $os
+     * @param string $url
+     * @param array $params
+     * @param array $headers
+     * @param float $timeout
+     * @return string
+     */
+    public function putText(string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0): string
+    {
+        return $this->putResponseInstance($os, $url, $params, $headers, $timeout)->getBody();
+    }
+
+    /**
+     * 处理sendSingle
      * @param string $method
      * @param string $url
      * @param array $payload
      * @param array $headers
      * @param int $timeout
+     * @param bool $quiet
      * @return bool|string|null
      */
-    public static function single(string $method, string $url, array $payload = [], array $headers = [], int $timeout = 10): bool|string|null
+    public function sendSingle(string $method, string $url, array $payload = [], array $headers = [], int $timeout = 10, bool $quiet = false): bool|string|null
     {
-        Log::debug("[SINGLE] $url ", $payload);
-        //
-        $options = array(
-            'http' => array(
-                'method' => strtoupper($method),
-                'header' => ArrayR::toStr($headers),
-                'content' => http_build_query($payload),
-                'timeout' => $timeout,
-            ),
-        );
-        $result = $url ? @file_get_contents($url, false, stream_context_create($options)) : null;
-        //
-        Log::debug("[SINGLE] $result");
-        return $result ?: null;
-    }
-
-    // postAsync  getAsync
-    protected static function multiple(string $os, array $tasks = [], float $timeout = 30.0)
-    {
-
-
-    }
-
-
-    public function standardizeParam($param): array
-    {
-        return array_map(function ($item) {
-            if (is_array($item)) {
-                return $this->standardizeParam($item);
-            } else {
-                return (string)$item;
-            }
-        }, $param);
-    }
-
-
-    /**
-     * @param string $name
-     * @param array $arguments
-     * @return mixed
-     * @throws MethodNotFoundException
-     */
-    public static function __callStatic(string $name, array $arguments): mixed
-    {
-        $protectedName = '_' . $name;
-        if (method_exists(self::class, $protectedName)) {
-            return self::$protectedName(...$arguments);
+        $this->context->log()->recordDebug("[SINGLE] {$url}", $payload);
+        if ($url === '') {
+            return null;
         }
-        throw new MethodNotFoundException('Call undefined method ' . self::class . ':' . $name . '()');
+
+        $options = new RequestOptions();
+        $options->headers = $headers;
+        $options->timeout = (float)$timeout;
+        $options->quiet = $quiet;
+
+        if (strtolower($method) === 'get') {
+            $options->query = $payload;
+        } else {
+            $options->formParams = $payload;
+        }
+
+        try {
+            $response = $this->httpClient->send($method, $url, $options);
+            $result = $response->getBody();
+            $this->context->log()->recordDebug("[SINGLE] {$result}");
+
+            return $result !== '' ? $result : null;
+        } catch (Throwable $throwable) {
+            if ($quiet) {
+                $this->context->log()->recordDebug("[SINGLE] {$throwable->getMessage()}");
+            } else {
+                $this->context->log()->recordWarning("[SINGLE] {$throwable->getMessage()}");
+            }
+
+            return null;
+        }
     }
 
     /**
-     * 开始请求
+     * 获取Headers
+     * @param string $os
+     * @param string $url
+     * @param array $params
+     * @param array $headers
+     * @param float $timeout
+     * @return array
+     */
+    public function fetchHeaders(string $os, string $url, array $params = [], array $headers = [], float $timeout = 30.0): array
+    {
+        $requestId = $this->startRequest();
+        $this->context->log()->recordDebug("[HEADERS#{$requestId}] {$url}", $params);
+
+        try {
+            $response = $this
+                ->withUrl($requestId, $url)
+                ->withMethod($requestId, 'get')
+                ->withHeaders($requestId, $os, $headers)
+                ->withOptions($requestId, [
+                    'query' => $params,
+                    'allow_redirects' => false,
+                ], $timeout)
+                ->handle($requestId);
+
+            $this->context->log()->recordDebug("[HEADERS#{$requestId}] " . $response->getBody());
+
+            return $response->getHeaders();
+        } finally {
+            $this->stopRequest($requestId);
+        }
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function diagnosticsSummary(): array
+    {
+        $buvidCached = $this->buvid !== null || $this->cache->pull('buvid', self::CACHE_SCOPE) !== false;
+
+        return [
+            'timeout_seconds' => (string)$this->timeout,
+            'retry_max_attempts' => (string)$this->retryPolicy->maxAttempts(),
+            'retry_base_delay_seconds' => (string)$this->retryPolicy->baseDelaySeconds(),
+            'retry_max_delay_seconds' => (string)$this->retryPolicy->maxDelaySeconds(),
+            'retry_total_budget_seconds' => (string)$this->retryPolicy->totalBudgetSeconds(),
+            'retry_jitter_ratio' => (string)$this->retryPolicy->jitterRatio(),
+            'proxy_enabled' => $this->context()->enabled('network_proxy') ? 'yes' : 'no',
+            'buvid_cached' => $buvidCached ? 'yes' : 'no',
+            'governance_enabled' => $this->context()->config('request_governance.enable', false, 'bool') ? 'yes' : 'no',
+            'governance_mode' => (string)$this->context()->config('request_governance.mode', 'observe'),
+            'governance_window_seconds' => (string)$this->context()->config('request_governance.window_seconds', 60, 'int'),
+            'governance_max_requests_per_host' => (string)$this->context()->config('request_governance.max_requests_per_host', 60, 'int'),
+            'governance_cooldown_seconds' => (string)$this->context()->config('request_governance.cooldown_seconds', 30, 'int'),
+        ];
+    }
+
+    /**
+     * 处理start请求
      * @return string
      */
     protected function startRequest(): string
     {
-        $request_id = Fake::hash();
-        $this->caches[$request_id] = [];
-        return $request_id;
+        $requestId = Fake::hash();
+        $this->caches[$requestId] = [];
+
+        return $requestId;
     }
 
     /**
-     * @param string $request_id
+     * 设置请求
+     * @param string $requestId
      * @param string $key
      * @param mixed $values
      * @return void
      */
-    protected function setRequest(string $request_id, string $key, mixed $values): void
+    protected function setRequest(string $requestId, string $key, mixed $values): void
     {
-        $this->caches[$request_id][$key] = $values;
+        $this->caches[$requestId][$key] = $values;
     }
 
     /**
-     * @param string $request_id
+     * 获取请求
+     * @param string $requestId
      * @param string $key
      * @return mixed
      */
-    protected function getRequest(string $request_id, string $key): mixed
+    protected function getRequest(string $requestId, string $key): mixed
     {
-        return $this->caches[$request_id][$key];
+        if (!isset($this->caches[$requestId]) || !array_key_exists($key, $this->caches[$requestId])) {
+            throw new RuntimeException("Missing request cache entry {$requestId}.{$key}");
+        }
+
+        return $this->caches[$requestId][$key];
     }
 
     /**
-     * 结束请求
-     * @param string $request_id
+     * 处理stop请求
+     * @param string $requestId
      * @return void
      */
-    protected function stopRequest(string $request_id): void
+    protected function stopRequest(string $requestId): void
     {
-        unset($this->caches[$request_id]);
+        unset($this->caches[$requestId]);
     }
 
     /**
-     * GET请求
-     * @param $os
-     * @param $url
-     * @param array $params
-     * @param array $headers
-     * @param float $timeout
-     * @return mixed
+     * 处理withURL
+     * @param string $requestId
+     * @param string $url
+     * @return static
      */
-    public static function headers($os, $url, array $params = [], array $headers = [], float $timeout = 30.0): array
+    protected function withUrl(string $requestId, string $url): static
     {
-        //
-        $rid = self::getInstance()->startRequest();
-        //
-        Log::debug("[HEADERS#$rid] $url ", $params);
-        //
-        $payload['query'] = count($params) ? $params : [];
-        $payload['allow_redirects'] = false;
-        //
-        $response = self::getInstance()
-            ->withClient($rid)
-            ->withUrl($rid, $url)
-            ->withMethod($rid, 'get')
-            ->withHeaders($rid, $os, $headers)
-            ->withOptions($rid, $payload, $timeout)
-            ->handle($rid);
-        //
-        self::getInstance()->stopRequest($rid);
-        //
-        Log::debug("[HEADERS#$rid] " . $response->getBody());
-        //
-        return $response->getHeaders();
+        $this->setRequest($requestId, 'url', $url);
+
+        return $this;
     }
 
+    /**
+     * 处理withMethod
+     * @param string $requestId
+     * @param string $method
+     * @return static
+     */
+    protected function withMethod(string $requestId, string $method): static
+    {
+        $this->setRequest($requestId, 'method', strtolower($method));
+
+        return $this;
+    }
+
+    /**
+     * 处理withHeaders
+     * @param string $requestId
+     * @param string $os
+     * @param array $headers
+     * @return static
+     */
+    protected function withHeaders(string $requestId, string $os = 'app', array $headers = []): static
+    {
+        $this->setRequest($requestId, 'headers', array_merge($this->defaultHeadersForOs($os), $headers));
+
+        return $this;
+    }
+
+    /**
+     * 处理with选项
+     * @param string $requestId
+     * @param array $addOptions
+     * @param float $timeout
+     * @return static
+     */
+    protected function withOptions(string $requestId, array $addOptions, float $timeout = 30.0): static
+    {
+        $defaultOptions = [
+            'headers' => $this->getRequest($requestId, 'headers'),
+            'timeout' => $timeout,
+            'http_errors' => false,
+        ];
+        if ($this->context()->enabled('network_proxy')) {
+            $defaultOptions['proxy'] = (string)$this->context()->config('network_proxy.proxy');
+        }
+
+        $this->setRequest($requestId, 'options', array_merge($defaultOptions, $addOptions));
+
+        return $this;
+    }
+
+    /**
+     * 处理handle
+     * @param string $requestId
+     * @return HttpResponse
+     */
+    protected function handle(string $requestId): HttpResponse
+    {
+        return $this->handleWithHttpClient($requestId);
+    }
+
+    /**
+     * 处理handleWithHTTP客户端
+     * @param string $requestId
+     * @return HttpResponse
+     */
+    protected function handleWithHttpClient(string $requestId): HttpResponse
+    {
+        $url = (string)$this->getRequest($requestId, 'url');
+        $method = strtolower((string)$this->getRequest($requestId, 'method'));
+        $options = (array)$this->getRequest($requestId, 'options');
+        $requestOptions = $this->toHttpRequestOptions($options);
+        $startedAt = microtime(true);
+        $lastThrowable = null;
+        $lastCategory = RequestException::CATEGORY_UNKNOWN;
+        $attempt = 0;
+
+        while (true) {
+            $attempt++;
+
+            try {
+                $response = $this->httpClient->send($method, $url, $requestOptions);
+                if ($response->getBody() === '' && $requestOptions->sink === null) {
+                    throw new ResponseEmptyException('Value IsEmpty');
+                }
+
+                return $response;
+            } catch (Throwable $throwable) {
+                $lastThrowable = $throwable;
+                $lastCategory = $this->failureClassifier->classifyThrowable($throwable);
+
+                $elapsedSeconds = microtime(true) - $startedAt;
+                if (!$this->retryPolicy->shouldRetry($method, $requestOptions, $lastCategory, $attempt, $elapsedSeconds)) {
+                    break;
+                }
+
+                $delaySeconds = $this->retryPolicy->delaySecondsForAttempt($attempt);
+                $this->context->log()->recordWarning(sprintf(
+                    'HTTP -> ATTEMPT: %d METHOD: %s CATEGORY: %s URL: %s ERROR: %s NEXT_DELAY: %.3fs',
+                    $attempt,
+                    strtoupper($method),
+                    $lastCategory,
+                    $url,
+                    $throwable->getMessage(),
+                    $delaySeconds,
+                ));
+                $this->sleep($delaySeconds);
+            }
+        }
+
+        $wrapped = $lastThrowable instanceof RuntimeException
+            ? $lastThrowable
+            : new RuntimeException(
+                $lastThrowable?->getMessage() ?? 'unknown request error',
+                (int)($lastThrowable?->getCode() ?? 0),
+                $lastThrowable,
+            );
+
+        throw new RequestException(
+            $wrapped->getMessage() !== ''
+                ? sprintf('网络异常，重试 %d 次后仍失败: %s', $attempt, $wrapped->getMessage())
+                : sprintf('网络异常，重试 %d 次后仍失败', $attempt),
+            $method,
+            $url,
+            (int)$wrapped->getCode(),
+            $wrapped,
+            $lastCategory,
+            $requestId,
+            $attempt,
+        );
+    }
+
+    /**
+     * 处理签名Payload
+     * @param array $payload
+     * @param string $appSecret
+     * @return array
+     */
+    protected static function signPayload(array $payload, string $appSecret): array
+    {
+        if (isset($payload['sign'])) {
+            unset($payload['sign']);
+        }
+
+        ksort($payload);
+        $payload['sign'] = md5(http_build_query($payload) . $appSecret);
+
+        return $payload;
+    }
+
+    /**
+     * 处理toHTTP请求选项
+     * @param array $options
+     * @return RequestOptions
+     */
+    protected function toHttpRequestOptions(array $options): RequestOptions
+    {
+        $requestOptions = new RequestOptions();
+        $requestOptions->headers = (array)($options['headers'] ?? []);
+        $requestOptions->query = (array)($options['query'] ?? []);
+        $requestOptions->json = isset($options['json']) && is_array($options['json']) ? $options['json'] : null;
+        $requestOptions->formParams = isset($options['form_params']) && is_array($options['form_params']) ? $options['form_params'] : null;
+        $requestOptions->body = isset($options['body']) && is_string($options['body']) ? $options['body'] : null;
+        $requestOptions->sink = isset($options['sink']) && is_string($options['sink']) ? $options['sink'] : null;
+        $requestOptions->followRedirects = (bool)($options['allow_redirects'] ?? true);
+        $requestOptions->timeout = (float)($options['timeout'] ?? $this->timeout);
+        $requestOptions->proxy = isset($options['proxy']) && is_string($options['proxy']) ? $options['proxy'] : null;
+        $requestOptions->retryable = (bool)($options['retryable'] ?? false);
+
+        return $requestOptions;
+    }
+
+    /**
+     * 处理上下文
+     * @return AppContext
+     */
+    protected function context(): AppContext
+    {
+        return $this->context;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function defaultHeadersForOs(string $os): array
+    {
+        $cookie = $this->context()->auth('cookie');
+        $appHeaders = [
+            'env' => 'prod',
+            'APP-KEY' => 'android',
+            'Buvid' => $this->buvidValue(),
+            'Accept' => '*/*',
+            'Accept-Encoding' => 'gzip',
+            'Accept-Language' => 'zh-cn',
+            'Connection' => 'keep-alive',
+            'User-Agent' => (string)$this->context()->device('platform.headers.app_ua'),
+        ];
+        $pcHeaders = [
+            'Accept' => 'application/json, text/plain, */*',
+            'Accept-Encoding' => 'gzip, deflate',
+            'Accept-Language' => 'zh-CN,zh;q=0.9',
+            'User-Agent' => (string)$this->context()->device('platform.headers.pc_ua'),
+        ];
+        $otherHeaders = [
+            'User-Agent' => (string)$this->context()->device('platform.headers.other_ua'),
+        ];
+
+        $defaultHeaders = match ($os) {
+            'app' => $appHeaders,
+            'pc' => $pcHeaders,
+            default => $otherHeaders,
+        };
+
+        if (in_array($os, ['app', 'pc'], true) && $cookie !== '') {
+            $pcCookie = $this->context()->auth('pc_cookie');
+            $defaultHeaders['Cookie'] = $os === 'pc' && $pcCookie !== '' ? $pcCookie : $cookie;
+        }
+
+        return $defaultHeaders;
+    }
+
+    /**
+     * 处理sleep
+     * @param float $seconds
+     * @return void
+     */
+    private function sleep(float $seconds): void
+    {
+        ($this->sleep)($seconds);
+    }
 }

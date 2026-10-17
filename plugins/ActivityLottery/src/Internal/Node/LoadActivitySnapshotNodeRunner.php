@@ -1,0 +1,84 @@
+<?php declare(strict_types=1);
+
+namespace Bhp\Plugin\Builtin\ActivityLottery\Internal\Node;
+
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Flow\ActivityFlow;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Flow\ActivityNode;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Flow\ActivityNodeResult;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Flow\ActivityNodeStatus;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Gateway\ActivityLotteryGateway;
+use Bhp\Util\Exceptions\RequestException;
+use Throwable;
+
+final class LoadActivitySnapshotNodeRunner implements NodeRunnerInterface
+{
+    private const RETRY_DELAY_SECONDS = 300;
+
+    /**
+     * 初始化 LoadActivitySnapshotNodeRunner
+     * @param ActivityLotteryGateway $activityGateway
+     */
+    public function __construct(
+        private readonly ActivityLotteryGateway $activityGateway = new ActivityLotteryGateway(),
+    ) {
+    }
+
+    /**
+     * 获取类型标识
+     * @return string
+     */
+    public function type(): string
+    {
+        return 'load_activity_snapshot';
+    }
+
+    /**
+     * 启动执行流程
+     * @param ActivityFlow $flow
+     * @param ActivityNode $node
+     * @param int $now
+     * @return ActivityNodeResult
+     */
+    public function run(ActivityFlow $flow, ActivityNode $node, int $now): ActivityNodeResult
+    {
+        $activity = $flow->activity();
+        $url = trim((string)($activity['url'] ?? ''));
+        if ($url === '') {
+            return new ActivityNodeResult(false, '缺少活动页 URL', [
+                'node_status' => ActivityNodeStatus::FAILED,
+            ], $now);
+        }
+
+        try {
+            $html = trim($this->activityGateway->fetchActivityPageHtml($url));
+        } catch (RequestException $e) {
+            return new ActivityNodeResult(false, '活动页加载失败: ' . $e->getMessage(), [
+                'node_status' => ActivityNodeStatus::WAITING,
+                'next_run_at' => $now + self::RETRY_DELAY_SECONDS,
+            ], $now);
+        } catch (Throwable $e) {
+            return new ActivityNodeResult(false, '活动页加载失败: ' . $e->getMessage(), [
+                'node_status' => ActivityNodeStatus::FAILED,
+            ], $now);
+        }
+
+        if ($html === '') {
+            return new ActivityNodeResult(false, '活动页为空', [
+                'node_status' => ActivityNodeStatus::FAILED,
+            ], $now);
+        }
+
+        return new ActivityNodeResult(true, '活动页快照加载成功', [
+            'node_status' => ActivityNodeStatus::SUCCEEDED,
+            'context_patch' => [
+                'activity_snapshot' => [
+                    'url' => $url,
+                    'html' => $html,
+                    'fetched_at' => $now,
+                ],
+            ],
+        ], $now);
+    }
+}
+
+

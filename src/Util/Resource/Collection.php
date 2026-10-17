@@ -17,83 +17,129 @@
 
 namespace Bhp\Util\Resource;
 
+use ArrayAccess;
+use Countable;
 use RecursiveArrayIterator;
-use Toolkit\Stdlib\Arr;
 use Traversable;
 use function is_array;
-use function serialize;
-use function strpos;
-use function unserialize;
 
-/**
- * Class Collection -> https://github.com/phppkg/config
- *
- * @package PhpPkg\Config
- *
- * 支持 链式的子节点 设置 和 值获取
- * e.g:
- * ```
- * $data = [
- *      'foo' => [
- *          'bar' => [
- *              'yoo' => 'value'
- *          ]
- *       ]
- * ];
- * $config = new Collection();
- * $config->get('foo.bar.yoo')` equals to $data['foo']['bar']['yoo'];
- * ```
- */
-class Collection extends \Toolkit\Stdlib\Std\Collection
+class Collection implements ArrayAccess, Countable, \IteratorAggregate
 {
     /**
-     * @var int
+     * @var array<string, mixed>
      */
-    public int $mergeDepth = 3;
+    protected array $data = [];
 
-    /**
-     * The key path separator.
-     *
-     * @var  string
-     */
+    public int $mergeDepth = 3;
     public string $keyPathSep = '.';
 
     /**
-     * set config value by key/path
-     *
-     * @param string $key
-     * @param mixed $value
-     *
-     * @return mixed
+     * 清空数据
+     * @return static
      */
-    public function set(string $key, mixed $value): static
+    public function clear(): static
     {
-        if ($this->keyPathSep && strpos($key, $this->keyPathSep) > 0) {
-            Arr::setByPath($this->data, $key, $value, $this->keyPathSep);
-            return $this;
-        }
+        $this->data = [];
 
-        return parent::set($key, $value);
+        return $this;
     }
 
     /**
+     * 处理设置
      * @param string $key
-     * @param mixed|null $default
-     *
+     * @param mixed $value
+     * @return static
+     */
+    public function set(string $key, mixed $value): static
+    {
+        if ($this->keyPathSep !== '' && strpos($key, $this->keyPathSep) > 0) {
+            $this->setByPath($this->data, $key, $value, $this->keyPathSep);
+
+            return $this;
+        }
+
+        $this->data[$key] = $value;
+
+        return $this;
+    }
+
+    /**
+     * 处理get
+     * @param string $key
+     * @param mixed $default
      * @return mixed
      */
     public function get(string $key, mixed $default = null): mixed
     {
-        if ($this->keyPathSep && strpos($key, $this->keyPathSep) > 0) {
-            return Arr::getByPath($this->data, $key, $default, $this->keyPathSep);
+        if ($this->keyPathSep !== '' && strpos($key, $this->keyPathSep) > 0) {
+            return $this->getByPath($this->data, $key, $default, $this->keyPathSep);
         }
 
-        return parent::get($key, $default);
+        return $this->data[$key] ?? $default;
     }
 
     /**
+     * 获取Int
      * @param string $key
-     *
+     * @param mixed $default
+     * @return int
+     */
+    public function getInt(string $key, mixed $default = null): int
+    {
+        return (int)$this->get($key, $default);
+    }
+
+    /**
+     * 获取String
+     * @param string $key
+     * @param mixed $default
+     * @return string
+     */
+    public function getString(string $key, mixed $default = null): string
+    {
+        $value = $this->get($key, $default);
+
+        if ($value === null) {
+            return '';
+        }
+
+        if (is_scalar($value)) {
+            return (string)$value;
+        }
+
+        return '';
+    }
+
+    /**
+     * 获取Bool
+     * @param string $key
+     * @param mixed $default
+     * @return bool
+     */
+    public function getBool(string $key, mixed $default = null): bool
+    {
+        $value = $this->get($key, $default);
+
+        return match (true) {
+            is_bool($value) => $value,
+            is_string($value) => in_array(strtolower($value), ['1', 'true', 'yes', 'on'], true),
+            default => (bool)$value,
+        };
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function getArray(string $key, mixed $default = null): array
+    {
+        $value = $this->get($key, $default);
+
+        return is_array($value) ? $value : (is_array($default) ? $default : []);
+    }
+
+    /**
+     * 处理exists
+     * @param string $key
      * @return bool
      */
     public function exists(string $key): bool
@@ -102,8 +148,8 @@ class Collection extends \Toolkit\Stdlib\Std\Collection
     }
 
     /**
+     * 处理has
      * @param string $key
-     *
      * @return bool
      */
     public function has(string $key): bool
@@ -112,7 +158,7 @@ class Collection extends \Toolkit\Stdlib\Std\Collection
     }
 
     /**
-     * @return array
+     * @return array<string, mixed>
      */
     public function getData(): array
     {
@@ -120,6 +166,15 @@ class Collection extends \Toolkit\Stdlib\Std\Collection
     }
 
     /**
+     * @return array<string, mixed>
+     */
+    public function getArrayCopy(): array
+    {
+        return $this->data;
+    }
+
+    /**
+     * 获取键PathSep
      * @return string
      */
     public function getKeyPathSep(): string
@@ -128,7 +183,9 @@ class Collection extends \Toolkit\Stdlib\Std\Collection
     }
 
     /**
+     * 设置键PathSep
      * @param string $keyPathSep
+     * @return void
      */
     public function setKeyPathSep(string $keyPathSep): void
     {
@@ -136,9 +193,9 @@ class Collection extends \Toolkit\Stdlib\Std\Collection
     }
 
     /**
+     * 处理加载
      * @param array|Traversable $data
-     *
-     * @return $this
+     * @return self
      */
     public function load(array|Traversable $data): self
     {
@@ -148,9 +205,9 @@ class Collection extends \Toolkit\Stdlib\Std\Collection
     }
 
     /**
+     * 获取数据
      * @param array|Traversable $data
-     *
-     * @return $this
+     * @return self
      */
     public function loadData(array|Traversable $data): self
     {
@@ -160,9 +217,7 @@ class Collection extends \Toolkit\Stdlib\Std\Collection
     }
 
     /**
-     * @param array $parent
-     * @param array|Traversable $data
-     * @param int $depth
+     * @param array<string, mixed> $parent
      */
     protected function bindData(array &$parent, array|Traversable $data, int $depth = 1): void
     {
@@ -175,7 +230,8 @@ class Collection extends \Toolkit\Stdlib\Std\Collection
                 if ($depth > $this->mergeDepth) {
                     $parent[$key] = $value;
                 } else {
-                    $this->bindData($parent[$key], $value, ++$depth);
+                    $nextDepth = $depth + 1;
+                    $this->bindData($parent[$key], $value, $nextDepth);
                 }
             } else {
                 $parent[$key] = $value;
@@ -184,7 +240,7 @@ class Collection extends \Toolkit\Stdlib\Std\Collection
     }
 
     /**
-     * @return array
+     * @return string[]
      */
     public function getKeys(): array
     {
@@ -192,7 +248,8 @@ class Collection extends \Toolkit\Stdlib\Std\Collection
     }
 
     /**
-     * @return RecursiveArrayIterator
+     * 获取Iterator
+     * @return Traversable
      */
     public function getIterator(): Traversable
     {
@@ -200,19 +257,103 @@ class Collection extends \Toolkit\Stdlib\Std\Collection
     }
 
     /**
-     * Unset an offset in the iterator.
-     *
+     * 处理offsetExists
      * @param mixed $offset
+     * @return bool
      */
-    public function offsetUnset($offset): void
+    public function offsetExists(mixed $offset): bool
     {
-        $this->set($offset, null);
+        return isset($this->data[(string)$offset]);
     }
 
+    /**
+     * 处理offsetGet
+     * @param mixed $offset
+     * @return mixed
+     */
+    public function offsetGet(mixed $offset): mixed
+    {
+        return $this->get((string)$offset);
+    }
+
+    /**
+     * 处理offset设置
+     * @param mixed $offset
+     * @param mixed $value
+     * @return void
+     */
+    public function offsetSet(mixed $offset, mixed $value): void
+    {
+        $this->set((string)$offset, $value);
+    }
+
+    /**
+     * 处理offsetUnset
+     * @param mixed $offset
+     * @return void
+     */
+    public function offsetUnset(mixed $offset): void
+    {
+        $this->set((string)$offset, null);
+    }
+
+    /**
+     * 获取数量
+     * @return int
+     */
+    public function count(): int
+    {
+        return count($this->data);
+    }
+
+    /**
+     * 克隆当前实例
+     */
     public function __clone()
     {
-        $this->data = unserialize(serialize($this->data), [
-            'allowed_classes' => self::class
-        ]);
+        $copy = unserialize(serialize($this->data));
+        $this->data = is_array($copy) ? $copy : [];
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    protected function getByPath(array $data, string $path, mixed $default = null, string $separator = '.'): mixed
+    {
+        $segments = explode($separator, $path);
+        $current = $data;
+
+        foreach ($segments as $segment) {
+            if (!is_array($current) || !array_key_exists($segment, $current)) {
+                return $default;
+            }
+
+            $current = $current[$segment];
+        }
+
+        return $current;
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    protected function setByPath(array &$data, string $path, mixed $value, string $separator = '.'): void
+    {
+        $segments = explode($separator, $path);
+        $current = &$data;
+
+        foreach ($segments as $index => $segment) {
+            $last = $index === array_key_last($segments);
+            if ($last) {
+                $current[$segment] = $value;
+                break;
+            }
+
+            if (!isset($current[$segment]) || !is_array($current[$segment])) {
+                $current[$segment] = [];
+            }
+
+            $current = &$current[$segment];
+        }
     }
 }

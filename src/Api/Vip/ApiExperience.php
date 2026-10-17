@@ -17,31 +17,35 @@
 
 namespace Bhp\Api\Vip;
 
+use Bhp\Api\Support\AbstractApiClient;
 use Bhp\Request\Request;
-use Bhp\User\User;
 
-class ApiExperience
+class ApiExperience extends AbstractApiClient
 {
     /**
-     * 领取大会员额外经验
-     * @return array
+     * 初始化 ApiExperience
+     * @param Request $request
      */
-    public static function add(): array
-    {
-        $user = User::parseCookie();
-        //
-        $url = 'https://api.bilibili.com/x/vip/experience/add';
-        $payload = [
-            'mid' => $user['uid'],
-            'csrf' => $user['csrf'],
-            // 'buvid'=>'B8B511D7-AE19-2586-6A5F-xxxxxx',
-        ];
-        $headers = [
-            'origin' => 'https://account.bilibili.com',
-            'referer' => 'https://account.bilibili.com/',
-        ];
-        // {"code":0,"message":"0","ttl":1,"data":{"type":0,"is_grant":true}}
-        return Request::postJson(true, 'pc', $url, $payload, $headers);
+    public function __construct(
+        Request $request,
+    ) {
+        parent::__construct($request);
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function add(): array
+    {
+        $url = 'https://api.bilibili.com/x/vip/experience/add';
+        $payload = [
+            'mid' => $this->request()->uidValue(),
+            'csrf' => $this->request()->csrfValue(),
+        ];
+
+        return $this->decodePost('pc', $url, $payload, [
+            'origin' => 'https://account.bilibili.com',
+            'referer' => 'https://account.bilibili.com/',
+        ], 'vip.experience.add');
+    }
 }

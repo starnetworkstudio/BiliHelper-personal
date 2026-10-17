@@ -1,267 +1,799 @@
 <?php declare(strict_types=1);
 
-/**
- *  Website: https://mudew.com/
- *  Author: Lkeme
- *  License: The MIT License
- *  Email: Useri@live.cn
- *  Updated: 2018 ~ 2026
- *
- *   _____   _   _       _   _   _   _____   _       _____   _____   _____
- *  |  _  \ | | | |     | | | | | | | ____| | |     |  _  \ | ____| |  _  \ &   ／l、
- *  | |_| | | | | |     | | | |_| | | |__   | |     | |_| | | |__   | |_| |   （ﾟ､ ｡ ７
- *  |  _  { | | | |     | | |  _  | |  __|  | |     |  ___/ |  __|  |  _  /  　 \、ﾞ ~ヽ   *
- *  | |_| | | | | |___  | | | | | | | |___  | |___  | |     | |___  | | \ \   　じしf_, )ノ
- *  |_____/ |_| |_____| |_| |_| |_| |_____| |_____| |_|     |_____| |_|  \_\
- */
-
 namespace Bhp\Plugin;
 
+use Bhp\Config\Config;
 use Bhp\Log\Log;
-use Bhp\TimeLock\TimeLock;
+use Bhp\Notice\Notice;
+use Bhp\Plugin\Contract\PluginTaskInterface;
+use Bhp\Runtime\AppContext;
+use Bhp\Scheduler\TaskResult;
 use Bhp\Util\AsciiTable\AsciiTable;
-use Bhp\Util\DesignPattern\SingleTon;
+use DateTimeImmutable;
+use DateTimeZone;
+use ReflectionClass;
+use RuntimeException;
+use Stringable;
+use Throwable;
 
-class Plugin extends SingleTon
+class Plugin
 {
     /**
-     * 监听插件的启用/关闭|UUID下标
-     * @access private
-     * @var array
+     * @var array<string, array<string, array{0:object, 1:string}>>
      */
     protected array $_staff = [];
 
     /**
-     * 保存所有插件信息
-     * @var array
+     * @var array<string, array<string, mixed>>
      */
     protected array $_plugins = [];
 
     /**
-     * 保存插件优先级信息
-     * @var array
+     * @var int[]
      */
     protected array $_priority = [];
 
     /**
-     * @return void
+     * @var array<string, array<string, mixed>>
      */
-    public function init(): void
-    {
+    protected array $_registry = [];
+
+    /**
+     * @var array<string, object>
+     */
+    protected array $_instances = [];
+
+    /**
+     * @var array<string, array<string, mixed>>
+     */
+    private array $pendingManifests = [];
+
+    /**
+     * @var array<string, string>
+     */
+    private array $pluginNamespaceRoots = [];
+
+    private bool $pluginNamespaceAutoloaderRegistered = false;
+
+    /**
+     * 初始化 Plugin
+     * @param Config $config
+     * @param string $runtimeMode
+     * @param string $appRoot
+     * @param AppContext $context
+     * @param Notice $notice
+     * @param Log $log
+     * @param CorePluginRegistry $corePluginRegistry
+     * @param ExternalPluginRegistry $externalPluginRegistry
+     */
+    public function __construct(
+        private readonly Config $config,
+        private readonly string $runtimeMode,
+        private readonly string $appRoot,
+        private readonly AppContext $context,
+        private readonly Notice $notice,
+        private readonly Log $log,
+        private readonly ?CorePluginRegistry $corePluginRegistry = null,
+        private readonly ?ExternalPluginRegistry $externalPluginRegistry = null,
+    ) {
         $this->detector();
     }
 
     /**
-     * @return array
+     * @return array<string, array<string, mixed>>
      */
-    public static function getPlugins(): array
+    public function plugins(): array
     {
-        return self::getInstance()->_plugins;
+        return $this->_plugins;
     }
 
     /**
-     * @return array
+     * @return int[]
      */
-    public static function getPluginsPriority(): array
+    public function priorities(): array
     {
-        return self::getInstance()->_priority;
+        return $this->_priority;
     }
 
     /**
-     * @return array
+     * @return array<string, array<string, array{0:object,1:string}>>
      */
-    public static function getPluginsStaff(): array
+    public function staff(): array
     {
-        return self::getInstance()->_staff;
+        return $this->_staff;
     }
 
     /**
-     * 这个是全局使用的触发钩子动作方法
+     * @return array<string, array<string, mixed>>
+     */
+    public function registry(): array
+    {
+        return $this->_registry;
+    }
+
+    /**
+     * 处理应用上下文
+     * @return AppContext
+     */
+    public function appContext(): AppContext
+    {
+        return $this->context;
+    }
+
+    /**
+     * 处理通知
+     * @return Notice
+     */
+    public function notice(): Notice
+    {
+        return $this->notice;
+    }
+
+    /**
+     * 处理日志
+     * @return Log
+     */
+    public function log(): Log
+    {
+        return $this->log;
+    }
+
+    /**
+     * 判断插件是否满足条件
      * @param string $hook
-     * @param mixed ...$params
+     * @return bool
+     */
+    public function hasPlugin(string $hook): bool
+    {
+        return array_key_exists($hook, $this->_plugins);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function pluginDefinitionForClass(string $className): array
+    {
+        $hook = $this->resolveHookForClass($className);
+        $plugin = $this->_plugins[$hook] ?? null;
+
+        return is_array($plugin) ? $plugin : [];
+    }
+
+    /**
+     * 处理trigger
+     * @param string $hook
+     * @param mixed[] $params
      * @return string
      */
-    public function trigger(string $hook, mixed...$params): string
+    public function trigger(string $hook, mixed ...$params): string
     {
-        // 首先需要判断一下$hook 存不存在
-        if (isset($this->_staff[$hook]) && is_array($this->_staff[$hook]) && count($this->_staff[$hook]) > 0) {
-            $plugin_func_result = '';
-            // 如果存在定义 $plugin_func_result
-            foreach ($this->_staff[$hook] as $staff) {
-                //  如果只是记录 请不要返回
-                $plugin_func_result = '';
-                $class = &$staff[0]; // 引用过来的类
-                $method = $staff[1]; // 类下面的方法
-                if (method_exists($class, $method)) {
-                    //
-                    if (!$this->canItRun($class)) continue;
-                    //
-                    $func_result = $class->$method(...$params);
-                    if (is_numeric($func_result)) {
-                        // 这里判断返回值是不是字符串,如果不是将不进行返回到页面上
-                        $plugin_func_result .= $func_result;
-                    }
-                }
-            }
+        $pluginFuncResult = '';
+        $handlers = $this->_staff[$hook] ?? [];
+        if ($handlers === []) {
+            return $pluginFuncResult;
         }
-        return $plugin_func_result ?? '';
+
+        if (!$this->canItRun($hook)) {
+            return $pluginFuncResult;
+        }
+
+        foreach ($handlers as [$class, $method]) {
+            if (!method_exists($class, $method)) {
+                continue;
+            }
+
+            $normalizedResult = $this->normalizeTriggerResult($class->$method(...$params));
+            if ($normalizedResult === null) {
+                continue;
+            }
+
+            $pluginFuncResult .= $normalizedResult;
+        }
+
+        return $pluginFuncResult;
     }
 
     /**
-     * 这里是在插件中使用的方法 用来注册插件
-     * @param object $class_obj
+     * 处理运行任务
+     * @param string $hook
+     * @return TaskResult
+     */
+    public function runTask(string $hook): TaskResult
+    {
+        if (!$this->canItRun($hook)) {
+            return TaskResult::keepSchedule();
+        }
+
+        if ($this->isPluginExpiredNow($hook)) {
+            $this->markPluginExpired($hook, 'run');
+
+            return TaskResult::after(3153600000.0, 'plugin expired');
+        }
+
+        $instance = $this->_instances[$hook] ?? null;
+        if ($instance instanceof PluginTaskInterface) {
+            return $instance->runOnce();
+        }
+
+        $this->trigger($hook);
+
+        return TaskResult::keepSchedule();
+    }
+
+    /**
+     * 处理注册
+     * @param object $classObject
      * @param string $method
      * @return void
      */
-    public function register(object &$class_obj, string $method): void
+    public function register(object $classObject, string $method): void
     {
-        $hook = get_class($class_obj);
-        // 获取类名和方法名链接起来做下标
-        $func_class = $hook . '->' . $method;
-        // 将类和方法放入监听数组中 以$func_class做下标
-        $this->_staff[$hook][$func_class] = array(&$class_obj, $method);
-        // 每个插件必须实现的 getPluginInfo 获取插件信息
-        $this->addPluginInfo($hook, $class_obj->getPluginInfo());
+        $className = get_class($classObject);
+        $hook = $this->resolveHookForClass($className);
+        $funcClass = $hook . '->' . $method;
+
+        $this->_staff[$hook][$funcClass] = [$classObject, $method];
+        $this->_instances[$hook] = $classObject;
+
+        if (!isset($this->_registry[$hook])) {
+            $this->_registry[$hook] = [
+                'hook' => $hook,
+                'name' => $hook,
+                'class_name' => $className,
+                'path' => $this->resolveObjectPath($classObject),
+                'source' => '',
+                'vendor' => '',
+                'status' => 'registered',
+                'error' => '',
+                'manifest' => [],
+            ];
+        }
+
+        $manifest = $this->resolveManifestForHook($hook);
+        if ($manifest === []) {
+            throw new RuntimeException("插件 {$hook} 缺少 manifest 元数据");
+        }
+
+        if (!isset($this->_plugins[$hook])) {
+            $this->addPluginInfo($hook, $manifest);
+        }
+
+        $this->_registry[$hook]['name'] = (string)($manifest['name'] ?? $hook);
+        $this->_registry[$hook]['class_name'] = $className;
+        $this->_registry[$hook]['path'] = $this->resolveObjectPath($classObject);
+        $this->_registry[$hook]['source'] = (string)($manifest['source'] ?? ($this->_registry[$hook]['source'] ?? ''));
+        $this->_registry[$hook]['vendor'] = (string)($manifest['vendor'] ?? ($this->_registry[$hook]['vendor'] ?? ''));
+        $this->_registry[$hook]['status'] = 'registered';
+        $this->_registry[$hook]['error'] = '';
+        $this->_registry[$hook]['manifest'] = $manifest;
+        unset($this->pendingManifests[$hook]);
     }
 
     /**
-     * @param string $hook
-     * @param array $info
-     * @return void
+     * @param array<string, mixed> $info
      */
     protected function addPluginInfo(string $hook, array $info): void
     {
         $info = $this->validatePlugins($hook, $info);
-        //
         $this->_plugins[$hook] = $info;
-        $this->_priority[] = $info['priority'];
+        $this->_priority[] = (int)$info['priority'];
     }
 
     /**
-     * @param string $hook
-     * @param array $info
-     * @return array
+     * @param array<string, mixed> $info
+     * @return array<string, mixed>
      */
     protected function validatePlugins(string $hook, array $info): array
     {
-        // 插件信息缺失
-        $fillable = ['hook', 'name', 'version', 'desc', 'priority', 'cycle'];
-        foreach ($fillable as $val) {
-            if (!array_key_exists($val, $info)) {
-                failExit("加载 $hook 插件错误，插件信息缺失，请检查修正.");
+        $required = ['hook', 'name', 'version', 'desc', 'priority', 'cycle'];
+        foreach ($required as $key) {
+            if (!array_key_exists($key, $info)) {
+                throw new RuntimeException("加载 {$hook} 插件错误，插件信息缺失字段 {$key}");
             }
         }
-        // 插件名冲突
+
         if (array_key_exists($hook, $this->_plugins)) {
-            failExit("加载 $hook 插件错误，插件名冲突，请检查修正.");
+            throw new RuntimeException("加载 {$hook} 插件错误，插件名冲突");
         }
-        // 插件优先级冲突
-        if (in_array($info['priority'], $this->_priority)) {
-            failExit("加载 $hook 插件错误，插件优先级冲突，请检查修正.");
+
+        if (in_array((int)$info['priority'], $this->_priority, true)) {
+            throw new RuntimeException("加载 {$hook} 插件错误，插件优先级冲突");
         }
-        // 插件优先级定义
-        if ($info['priority'] < 1000) {
-            failExit("加载 $hook 插件错误，插件优先级定义错误，请检查修正.");
+
+        if ((int)$info['priority'] < 1000) {
+            throw new RuntimeException("加载 {$hook} 插件错误，插件优先级定义错误");
         }
-        //
-        $info['status'] = '√';
-        //
+
+        $info['status'] = $info['status'] ?? '√';
+
         return $info;
     }
 
     /**
-     * 初始化插件(all)
+     * 处理detector
      * @return void
      */
     protected function detector(): void
     {
-        // 主要功能为将插件需要执行功能放入  $_staff
-        $plugins = $this->getActivePlugins();
-        foreach ($plugins as $plugin) {
-            // 这里将所有插件践行初始化
-            // 路径请自己注意
-            if (@file_exists($plugin['path'])) {
-                include_once($plugin['path']);
-                // 此时设定 文件夹名称 文件名称 类名 是统一的 如果想设定不统一请自己在get_active_plugins()内进行实现
-                $class = $plugin['name'];
-                if (class_exists($class)) {
-                    // 初始化所有插件类
-                    new $class($this);
+        $validator = new PluginManifestValidator();
+
+        foreach ($this->getActivePlugins() as $plugin) {
+            $hook = trim((string)($plugin['hook'] ?? $plugin['name'] ?? ''));
+            if ($hook === '') {
+                continue;
+            }
+
+            $manifest = is_array($plugin['manifest'] ?? null)
+                ? $validator->normalize($plugin['manifest'])
+                : [];
+            $class = trim((string)($plugin['class_name'] ?? ($manifest['class_name'] ?? '')));
+            $path = trim((string)($plugin['path'] ?? ''));
+            $name = trim((string)($plugin['name'] ?? ($manifest['name'] ?? $hook)));
+
+            $this->_registry[$hook] = [
+                'hook' => $hook,
+                'name' => $name !== '' ? $name : $hook,
+                'class_name' => $class,
+                'path' => $path,
+                'source' => (string)($plugin['source'] ?? ''),
+                'vendor' => (string)($plugin['vendor'] ?? ''),
+                'status' => 'pending',
+                'error' => '',
+                'manifest' => $manifest,
+            ];
+
+            $manifestError = trim((string)($plugin['manifest_error'] ?? ''));
+            if ($manifestError !== '') {
+                $this->_registry[$hook]['status'] = 'failed';
+                $this->_registry[$hook]['error'] = $manifestError;
+                $this->log->recordWarning("插件 {$hook} 装配失败: {$manifestError}");
+                continue;
+            }
+
+            $validationError = $validator->validateManifest($hook, $manifest)
+                ?? $validator->validatePhpCompatibility($hook, $manifest)
+                ?? $validator->validateRequiredExtensions($hook, $manifest);
+            if ($validationError !== null) {
+                $this->_registry[$hook]['status'] = 'failed';
+                $this->_registry[$hook]['error'] = $validationError;
+                $this->log->recordWarning("插件 {$hook} 装配失败: {$validationError}");
+                continue;
+            }
+
+            if ($this->isManifestExpired($manifest)) {
+                $message = $this->expiredMessage($manifest);
+                $this->_registry[$hook]['status'] = 'expired';
+                $this->_registry[$hook]['error'] = $message;
+                $this->log->recordWarning("插件 {$hook} 已过期，跳过装配: {$message}");
+                continue;
+            }
+
+            if (!$this->shouldLoadPluginForRuntimeMode($manifest)) {
+                $this->_registry[$hook]['status'] = 'skipped';
+                continue;
+            }
+
+            $this->registerPluginNamespaceAutoload($plugin);
+
+            if ($path === '' || !is_file($path)) {
+                $this->_registry[$hook]['status'] = 'missing';
+                $this->_registry[$hook]['error'] = '插件入口文件不存在';
+                continue;
+            }
+
+            if ($class === '' || !class_exists($class)) {
+                $this->_registry[$hook]['status'] = 'failed';
+                $this->_registry[$hook]['error'] = '插件类不存在';
+                continue;
+            }
+
+            $this->pendingManifests[$hook] = $manifest;
+            $this->_registry[$hook]['status'] = 'discovered';
+
+            try {
+                new $class($this);
+
+                if (!isset($this->_staff[$hook])) {
+                    throw new RuntimeException("插件 {$hook} 未完成注册");
                 }
+            } catch (Throwable $throwable) {
+                unset($this->_staff[$hook], $this->_instances[$hook], $this->_plugins[$hook], $this->pendingManifests[$hook]);
+                $this->_registry[$hook]['status'] = 'failed';
+                $this->_registry[$hook]['error'] = $throwable->getMessage();
+                $this->log->recordWarning("插件 {$hook} 装配失败: {$throwable->getMessage()}");
             }
         }
+
         $this->sortPlugins();
         $this->preloadPlugins();
     }
 
     /**
-     * 获取插件信息(all)
-     * 假定了插件在根目录的/plugin
-     * 假定插件的入口和插件文件夹的名字是一样的
-     * 注意:这个执行文件我放在了根目录 以下路径请根据实际情况获取
-     * @return array
+     * @return array<int, array<string, mixed>>
      */
     protected function getActivePlugins(): array
     {
-        $plugins = [];
-        $plugin_dir_name_arr = scandir(APP_PLUGIN_PATH);
-        //
-        foreach ($plugin_dir_name_arr as $_ => $v) {
-            if ($v == "." || $v == "..") {
-                continue;
-            }
-            // /plugin/Test/Test.php
-            if (is_dir(APP_PLUGIN_PATH . $v)) {
-                $path = APP_PLUGIN_PATH . $v . DIRECTORY_SEPARATOR . $v . '.php';
-                $plugins[] = ['name' => $v, 'path' => $path];
-            }
-        }
-        //
-        return $plugins;
+        return array_merge(
+            ($this->corePluginRegistry ?? new CorePluginRegistry())->all($this->appRoot),
+            ($this->externalPluginRegistry ?? new ExternalPluginRegistry())->all($this->appRoot),
+        );
     }
 
     /**
-     * 插件排序
-     * @param string $column_key
-     * @param int $sort_order
+     * 处理sortPlugins
+     * @param string $columnKey
+     * @param int $sortOrder
      * @return void
      */
-    protected function sortPlugins(string $column_key = 'priority', int $sort_order = SORT_ASC): void
+    protected function sortPlugins(string $columnKey = 'priority', int $sortOrder = SORT_ASC): void
     {
-        $arr = array_column($this->_plugins, $column_key);
-        array_multisort($arr, $sort_order, $this->_plugins);
+        uasort($this->_plugins, static function (array $left, array $right) use ($columnKey, $sortOrder): int {
+            $result = (($left[$columnKey] ?? 0) <=> ($right[$columnKey] ?? 0));
+
+            return $sortOrder === SORT_DESC ? -$result : $result;
+        });
     }
 
-
     /**
+     * 处理preloadPlugins
      * @return void
      */
     protected function preloadPlugins(): void
     {
-        $th_list = AsciiTable::array2table($this->_plugins, '预加载插件列表');
-        foreach ($th_list as $item) {
-            // Log::info($item);
+        if (!in_array($this->runtimeMode(), ['app', 'debug'], true)) {
+            return;
+        }
+
+        $visiblePlugins = array_values(array_filter(
+            $this->_plugins,
+            static fn(array $plugin): bool => (($plugin['mode'] ?? 'app') !== 'script')
+        ));
+        if ($visiblePlugins === []) {
+            return;
+        }
+
+        $rows = array_map(function (array $plugin): array {
+            return [
+                'name' => (string)($plugin['name'] ?? ''),
+                'desc' => (string)($plugin['desc'] ?? ''),
+                'priority' => (string)($plugin['priority'] ?? ''),
+                'cycle' => (string)($plugin['cycle'] ?? ''),
+                'start' => (string)($plugin['start'] ?? ''),
+                'end' => (string)($plugin['end'] ?? ''),
+                'enable' => $this->resolveEnableMark((string)($plugin['hook'] ?? '')),
+            ];
+        }, $visiblePlugins);
+
+        foreach (AsciiTable::array2table($rows, '预加载插件列表') as $item) {
             echo $item . PHP_EOL;
         }
     }
 
     /**
-     * @param mixed $class
+     * 判断It运行是否满足条件
+     * @param string $hook
      * @return bool
      */
-    protected function canItRun(mixed $class): bool
+    protected function canItRun(string $hook): bool
     {
-        if (!isset($class->info['start']) || !isset($class->info['end'])) {
-            // Log::info("插件 {$class->info['name']} 全天运行");
+        $plugin = $this->_plugins[$hook] ?? null;
+        if (!is_array($plugin)) {
+            return false;
+        }
+
+        if ($this->isPluginExpiredNow($hook)) {
+            $this->markPluginExpired($hook, 'trigger');
+            return false;
+        }
+
+        $start = trim((string)($plugin['start'] ?? ''));
+        $end = trim((string)($plugin['end'] ?? ''));
+        if ($start === '' || $end === '') {
             return true;
         }
-        if (TimeLock::isWithinTimeRange($class->info['start'], $class->info['end'])) {
-            // Log::info("插件 {$class->info['name']} 运行时间段");
-            return true;
-        } else {
-            // Log::info("插件 {$class->info['name']} 不在运行时间段");
+
+        return $this->isWithinTimeRange($start, $end);
+    }
+
+    /**
+     * 处理shortClass名称
+     * @param string $className
+     * @return string
+     */
+    protected function shortClassName(string $className): string
+    {
+        $normalized = str_replace('\\', '/', $className);
+
+        return basename($normalized);
+    }
+
+    /**
+     * 判断Within时间Range是否满足条件
+     * @param string $start
+     * @param string $end
+     * @return bool
+     */
+    protected function isWithinTimeRange(string $start, string $end): bool
+    {
+        $nowTime = $this->currentTimestamp();
+        $startTime = $this->parseTimeWindowBoundary($start, $nowTime);
+        $endTime = $this->parseTimeWindowBoundary($end, $nowTime);
+        if ($startTime === null || $endTime === null) {
             return false;
+        }
+
+        if ($endTime < $startTime) {
+            if ($nowTime < $startTime) {
+                $startTime = strtotime('-1 day', $startTime);
+            } else {
+                $endTime = strtotime('+1 day', $endTime);
+            }
+        }
+
+        return $nowTime >= $startTime && $nowTime <= $endTime;
+    }
+
+    /**
+     * 判断插件Expired当前时间是否满足条件
+     * @param string $hook
+     * @return bool
+     */
+    private function isPluginExpiredNow(string $hook): bool
+    {
+        $manifest = $this->_registry[$hook]['manifest'] ?? null;
+
+        return is_array($manifest) && $this->isManifestExpired($manifest);
+    }
+
+    /**
+     * @param array<string, mixed> $manifest
+     */
+    private function isManifestExpired(array $manifest): bool
+    {
+        $validUntil = PluginManifest::parseManifestDateTime(
+            (string)($manifest['valid_until'] ?? ''),
+            $this->manifestTimezone(),
+        );
+        if (!$validUntil instanceof DateTimeImmutable) {
+            return false;
+        }
+
+        return $this->currentDateTime() > $validUntil;
+    }
+
+    /**
+     * @param array<string, mixed> $manifest
+     */
+    private function expiredMessage(array $manifest): string
+    {
+        return 'valid_until=' . (string)($manifest['valid_until'] ?? '');
+    }
+
+    /**
+     * 处理mark插件Expired
+     * @param string $hook
+     * @param string $source
+     * @return void
+     */
+    private function markPluginExpired(string $hook, string $source): void
+    {
+        $status = (string)($this->_registry[$hook]['status'] ?? '');
+        if ($status === 'expired') {
+            return;
+        }
+
+        $manifest = $this->_registry[$hook]['manifest'] ?? [];
+        $message = is_array($manifest) ? $this->expiredMessage($manifest) : '';
+        if (isset($this->_registry[$hook])) {
+            $this->_registry[$hook]['status'] = 'expired';
+            $this->_registry[$hook]['error'] = $message;
+        }
+        if (isset($this->_plugins[$hook]) && is_array($this->_plugins[$hook])) {
+            $this->_plugins[$hook]['status'] = 'expired';
+        }
+
+        $this->log->recordWarning("插件 {$hook} 已过期，跳过执行 [{$source}]: {$message}");
+    }
+
+    /**
+     * 处理current日期时间
+     * @return DateTimeImmutable
+     */
+    private function currentDateTime(): DateTimeImmutable
+    {
+        return new DateTimeImmutable('now', $this->manifestTimezone());
+    }
+
+    /**
+     * 处理manifestTimezone
+     * @return DateTimeZone
+     */
+    private function manifestTimezone(): DateTimeZone
+    {
+        return new DateTimeZone('Asia/Shanghai');
+    }
+
+    /**
+     * 处理current时间戳
+     * @return int
+     */
+    protected function currentTimestamp(): int
+    {
+        return time();
+    }
+
+    /**
+     * 解析时间窗口Boundary
+     * @param string $time
+     * @param int $referenceTimestamp
+     * @return ?int
+     */
+    protected function parseTimeWindowBoundary(string $time, int $referenceTimestamp): ?int
+    {
+        $normalized = trim($time);
+        if (!preg_match('/^\d{2}:\d{2}(?::\d{2})?$/', $normalized)) {
+            return null;
+        }
+
+        $boundary = strtotime(date('Y-m-d', $referenceTimestamp) . ' ' . $normalized);
+
+        return $boundary === false ? null : $boundary;
+    }
+
+    /**
+     * 标准化Trigger结果
+     * @param mixed $result
+     * @return ?string
+     */
+    protected function normalizeTriggerResult(mixed $result): ?string
+    {
+        return match (true) {
+            is_int($result), is_float($result), is_string($result) => (string)$result,
+            $result instanceof Stringable => (string)$result,
+            default => null,
+        };
+    }
+
+    /**
+     * 解析ObjectPath
+     * @param object $object
+     * @return string
+     */
+    protected function resolveObjectPath(object $object): string
+    {
+        try {
+            $reflection = new ReflectionClass($object);
+
+            return (string)($reflection->getFileName() ?: '');
+        } catch (\ReflectionException) {
+            return '';
         }
     }
 
+    /**
+     * 解析EnableMark
+     * @param string $hook
+     * @return string
+     */
+    protected function resolveEnableMark(string $hook): string
+    {
+        foreach ($this->configKeyCandidates($hook) as $key) {
+            $enabled = $this->config->get($key . '.enable', null);
+            if ($enabled === null) {
+                continue;
+            }
+
+            return $this->config->get($key . '.enable', false, 'bool') ? '●' : '○';
+        }
+
+        return '◉';
+    }
+
+    /**
+     * @return string[]
+     */
+    protected function configKeyCandidates(string $hook): array
+    {
+        $snake = strtolower((string)preg_replace('/(?<!^)[A-Z]/', '_$0', $hook));
+        $compact = str_replace('_', '', $snake);
+
+        return array_values(array_unique([$snake, $compact]));
+    }
+
+    /**
+     * @param array<string, mixed> $manifest
+     */
+    protected function shouldLoadPluginForRuntimeMode(array $manifest): bool
+    {
+        $pluginMode = (string)($manifest['mode'] ?? 'app');
+        $runtimeMode = $this->runtimeMode();
+
+        return match ($runtimeMode) {
+            'script' => $pluginMode === 'script',
+            'app', 'debug' => $pluginMode !== 'script',
+            'restore' => false,
+            default => $pluginMode !== 'script',
+        };
+    }
+
+    /**
+     * 处理运行时模式
+     * @return string
+     */
+    protected function runtimeMode(): string
+    {
+        return $this->runtimeMode;
+    }
+
+    /**
+     * 解析HookForClass
+     * @param string $className
+     * @return string
+     */
+    private function resolveHookForClass(string $className): string
+    {
+        foreach ($this->_registry as $hook => $entry) {
+            if (($entry['class_name'] ?? '') === $className) {
+                return $hook;
+            }
+        }
+
+        return $this->shortClassName($className);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function resolveManifestForHook(string $hook): array
+    {
+        if (isset($this->pendingManifests[$hook])) {
+            return $this->pendingManifests[$hook];
+        }
+
+        $manifest = $this->_registry[$hook]['manifest'] ?? [];
+
+        return is_array($manifest) ? $manifest : [];
+    }
+
+    /**
+     * @param array<string, mixed> $plugin
+     */
+    private function registerPluginNamespaceAutoload(array $plugin): void
+    {
+        $prefix = trim((string)($plugin['namespace_prefix'] ?? ''));
+        $root = trim((string)($plugin['autoload_root'] ?? ''));
+        if ($prefix === '' || $root === '') {
+            return;
+        }
+
+        $normalizedPrefix = rtrim($prefix, '\\') . '\\';
+        $normalizedRoot = rtrim(str_replace('\\', '/', $root), '/') . '/';
+        $this->pluginNamespaceRoots[$normalizedPrefix] = $normalizedRoot;
+
+        if ($this->pluginNamespaceAutoloaderRegistered) {
+            return;
+        }
+
+        spl_autoload_register(function (string $class): void {
+            foreach ($this->pluginNamespaceRoots as $prefix => $root) {
+                if (!str_starts_with($class, $prefix)) {
+                    continue;
+                }
+
+                $relative = substr($class, strlen($prefix));
+                if ($relative === false || $relative === '') {
+                    return;
+                }
+
+                $path = $root . str_replace('\\', '/', $relative) . '.php';
+                if (is_file($path)) {
+                    require_once $path;
+                }
+
+                return;
+            }
+        });
+
+        $this->pluginNamespaceAutoloaderRegistered = true;
+    }
 }

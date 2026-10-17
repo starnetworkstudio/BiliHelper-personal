@@ -17,11 +17,21 @@
 
 namespace Bhp\Api\Passport;
 
+use Bhp\Api\Support\AbstractApiClient;
 use Bhp\Request\Request;
-use Bhp\Sign\Sign;
 
-class ApiLogin
+class ApiLogin extends AbstractApiClient
 {
+    /**
+     * 初始化 ApiLogin
+     * @param Request $request
+     */
+    public function __construct(
+        Request $request,
+    ) {
+        parent::__construct($request);
+    }
+
     /**
      * 密码登录
      * @param string $username
@@ -30,7 +40,7 @@ class ApiLogin
      * @param string $challenge
      * @return array
      */
-    public static function passwordLogin(string $username, string $password, string $validate = '', string $challenge = ''): array
+    public function passwordLogin(string $username, string $password, string $validate = '', string $challenge = ''): array
     {
         // $url = 'https://passport.bilibili.com/api/v3/oauth2/login';
         $url = 'https://passport.bilibili.com/x/passport-login/oauth2/login';
@@ -45,7 +55,9 @@ class ApiLogin
             'subid' => 1,
             'cookies' => ''
         ];
-        return Request::postJson(true, 'app', $url, Sign::login($payload));
+        return $this->decodePost('app', $url, $this->request()->signLoginPayload($payload), [
+            'Accept-Encoding' => 'identity',
+        ], 'login.password');
     }
 
     /**
@@ -53,12 +65,12 @@ class ApiLogin
      * @param array $payload
      * @return string
      */
-    public static function sendSms(array $payload): string
+    public function sendSms(array $payload): string
     {
         $url = 'https://passport.bilibili.com/x/passport-login/sms/send';
         // {"code":0,"message":"0","ttl":1,"data":{"is_new":false,"captcha_key":"4e292933816755442c1568e2043b8e41","recaptcha_url":""}}
         // {"code":0,"message":"0","ttl":1,"data":{"is_new":false,"captcha_key":"","recaptcha_url":"https://www.bilibili.com/h5/project-msg-auth/verify?ct=geetest\u0026recaptcha_token=ad520c3a4a3c46e29b1974d85efd2c4b\u0026gee_gt=1c0ea7c7d47d8126dda19ee3431a5f38\u0026gee_challenge=c772673050dce482b9f63ff45b681ceb\u0026hash=ea2850a43cc6b4f1f7b925d601098e5e"}}
-        return Request::post('app', $url, Sign::login($payload));
+        return $this->request()->postText('app', $url, $this->request()->signLoginPayload($payload));
     }
 
     /**
@@ -67,7 +79,7 @@ class ApiLogin
      * @param string $code
      * @return array
      */
-    public static function smsLogin(array $captcha, string $code): array
+    public function smsLogin(array $captcha, string $code): array
     {
         $url = 'https://passport.bilibili.com/x/passport-login/login/sms';
         $payload = [
@@ -77,7 +89,8 @@ class ApiLogin
             'statistics' => $captcha['statistics'],
             'code' => $code,
         ];
-        return Request::postJson(true, 'app', $url, Sign::login($payload));
+        return $this->decodePost('app', $url, $this->request()->signLoginPayload($payload), [
+            'Accept-Encoding' => 'identity',
+        ], 'login.sms');
     }
-
 }

@@ -22,23 +22,32 @@ use Bhp\Request\Request;
 class ApiMain
 {
     /**
+     * 初始化 ApiMain
+     * @param Request $request
+     */
+    public function __construct(
+        private readonly Request $request,
+    ) {
+    }
+
+    /**
      * 主站主页
      * @return array|mixed
      */
-    public static function home(): mixed
+    public function home(): mixed
     {
         $url = 'https://www.bilibili.com/';
-        return Request::headers('pc', $url);
+        return $this->request->fetchHeaders('pc', $url);
     }
 
     /**
      * video主页
      * @return array|mixed
      */
-    public static function video(string $bvid): mixed
+    public function video(string $bvid): mixed
     {
         $url = "https://www.bilibili.com/video/$bvid/";
-        return Request::headers('pc', $url);
+        return $this->request->fetchHeaders('pc', $url);
     }
 
 

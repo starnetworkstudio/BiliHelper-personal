@@ -1,0 +1,164 @@
+<?php declare(strict_types=1);
+
+namespace Bhp\Plugin\Builtin\ActivityLottery\Internal\Node;
+
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Flow\ActivityFlow;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Flow\ActivityNode;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Page\EraTaskSnapshot;
+
+final class ResolvedEraTaskView
+{
+    /**
+     * @param array<string, mixed> $runtimeMap
+     * @param array<string, mixed> $activity
+     * @param array<string, mixed> $progressMap
+     */
+    private function __construct(
+        private readonly string $taskId,
+        private readonly ?EraTaskSnapshot $task,
+        private readonly array $runtimeMap,
+        private readonly array $activity,
+        private readonly array $progressMap,
+    ) {
+    }
+
+    /**
+     * 处理from流程And节点
+     * @param ActivityFlow $flow
+     * @param ActivityNode $node
+     * @return self
+     */
+    public static function fromFlowAndNode(ActivityFlow $flow, ActivityNode $node): self
+    {
+        $taskId = trim((string)($node->payload()['task_id'] ?? ''));
+        $context = $flow->context()->toArray();
+        $task = null;
+
+        $tasks = $context['era_page_snapshot']['tasks'] ?? [];
+        if (is_array($tasks)) {
+            foreach ($tasks as $candidate) {
+                if (!is_array($candidate)) {
+                    continue;
+                }
+
+                $snapshot = EraTaskSnapshot::fromArray($candidate);
+                if ($snapshot->taskId() === $taskId) {
+                    $task = $snapshot;
+                    break;
+                }
+            }
+        }
+
+        $runtimeMap = is_array($context['era_task_runtime'] ?? null)
+            ? $context['era_task_runtime']
+            : [];
+        $progressMap = is_array($context['era_task_progress_snapshot'] ?? null)
+            ? $context['era_task_progress_snapshot']
+            : [];
+
+        return new self($taskId, $task, $runtimeMap, $flow->activity(), $progressMap);
+    }
+
+    /**
+     * 处理任务Id
+     * @return string
+     */
+    public function taskId(): string
+    {
+        return $this->taskId;
+    }
+
+    /**
+     * 处理任务
+     * @return ?EraTaskSnapshot
+     */
+    public function task(): ?EraTaskSnapshot
+    {
+        return $this->task;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function activity(): array
+    {
+        return $this->activity;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function taskRuntime(): array
+    {
+        if ($this->taskId === '') {
+            return [];
+        }
+
+        $state = $this->runtimeMap[$this->taskId] ?? [];
+        return is_array($state) ? $state : [];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function taskProgress(): array
+    {
+        if ($this->taskId === '') {
+            return [];
+        }
+
+        $snapshot = $this->progressMap[$this->taskId] ?? [];
+        return is_array($snapshot) ? $snapshot : [];
+    }
+
+    /**
+     * 解析d任务状态
+     * @return int
+     */
+    public function resolvedTaskStatus(): int
+    {
+        $pageStatus = max(0, $this->task?->taskStatus() ?? 0);
+        $progress = $this->taskProgress();
+        $progressStatus = isset($progress['task_status']) && is_numeric($progress['task_status'])
+            ? max(0, (int)$progress['task_status'])
+            : 0;
+
+        return max($pageStatus, $progressStatus);
+    }
+
+    /**
+     * @param array<string, mixed> $state
+     * @return array<string, mixed>
+     */
+    public function replaceTaskRuntime(array $state): array
+    {
+        if ($this->taskId === '') {
+            return [];
+        }
+
+        $runtimeMap = $this->runtimeMap;
+        if ($state === []) {
+            unset($runtimeMap[$this->taskId]);
+        } else {
+            $runtimeMap[$this->taskId] = $state;
+        }
+
+        return ['era_task_runtime' => $runtimeMap];
+    }
+
+    /**
+     * @param array<string, mixed> $patch
+     * @param string[] $removeKeys
+     * @return array<string, mixed>
+     */
+    public function patchTaskRuntime(array $patch, array $removeKeys = []): array
+    {
+        $state = array_replace($this->taskRuntime(), $patch);
+        foreach ($removeKeys as $key) {
+            unset($state[$key]);
+        }
+
+        return $this->replaceTaskRuntime($state);
+    }
+}
+

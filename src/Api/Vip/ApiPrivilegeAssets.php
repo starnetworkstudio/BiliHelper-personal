@@ -17,50 +17,52 @@
 
 namespace Bhp\Api\Vip;
 
+use Bhp\Api\Support\AbstractApiClient;
 use Bhp\Request\Request;
-use Bhp\Sign\Sign;
-use Bhp\User\User;
 
-class ApiPrivilegeAssets
+class ApiPrivilegeAssets extends AbstractApiClient
 {
     /**
-     * @var array|string[]
+     * @var array<string, string>
      */
-    protected static array $headers = [
-        'Referer' => 'https://big.bilibili.com/mobile/cardBag?closable=1&navhide=1&tab=all'
+    protected array $headers = [
+        'Referer' => 'https://big.bilibili.com/mobile/cardBag?closable=1&navhide=1&tab=all',
     ];
 
     /**
-     * 获取大会员权益列表
-     * @return array
+     * 初始化 ApiPrivilegeAssets
+     * @param Request $request
      */
-    public static function list(): array
-    {
-        $user = User::parseCookie();
-        //
-        $url = 'https://api.bilibili.com/x/vip/privilege_assets/list';
-        $payload = [
-            'csrf' => $user['csrf'],
-        ];
-        $headers = array_merge([], self::$headers);
-        return Request::getJson(true, 'app', $url, Sign::common($payload), $headers);
+    public function __construct(
+        Request $request,
+    ) {
+        parent::__construct($request);
     }
 
     /**
-     * 兑换大会员权益
-     * @param string $token
-     * @return array
+     * @return array<string, mixed>
      */
-    public static function exchange(string $token): array
+    public function list(): array
     {
-        $user = User::parseCookie();
-        //
+        $url = 'https://api.bilibili.com/x/vip/privilege_assets/list';
+        $payload = [
+            'csrf' => $this->request()->csrfValue(),
+        ];
+
+        return $this->decodeGet('app', $url, $this->request()->signCommonPayload($payload), $this->headers, 'vip.privilege_assets.list');
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function exchange(string $token): array
+    {
         $url = 'https://api.bilibili.com/x/vip/privilege_assets/exchange';
         $payload = [
             'token' => $token,
-            'csrf' => $user['csrf'],
+            'csrf' => $this->request()->csrfValue(),
         ];
-        $headers = array_merge([], self::$headers);
-        return Request::postJson(true, 'app', $url, Sign::common($payload), $headers);
+
+        return $this->decodePost('app', $url, $this->request()->signCommonPayload($payload), $this->headers, 'vip.privilege_assets.exchange');
     }
 }

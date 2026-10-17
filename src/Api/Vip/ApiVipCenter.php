@@ -17,32 +17,38 @@
 
 namespace Bhp\Api\Vip;
 
+use Bhp\Api\Support\AbstractApiClient;
 use Bhp\Request\Request;
-use Bhp\Sign\Sign;
-use Bhp\User\User;
 
-class ApiVipCenter
+class ApiVipCenter extends AbstractApiClient
 {
     /**
-     * @var array|string[]
+     * @var array<string, string>
      */
-    protected static array $headers = [
-        'Referer' => 'https://big.bilibili.com/mobile/index'
+    protected array $headers = [
+        'Referer' => 'https://big.bilibili.com/mobile/index',
     ];
 
     /**
-     * 大会员中心
-     * @return array
+     * 初始化 ApiVipCenter
+     * @param Request $request
      */
-    public static function v2(): array
+    public function __construct(
+        Request $request,
+    ) {
+        parent::__construct($request);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function v2(): array
     {
-        $user = User::parseCookie();
-        //
         $url = 'https://api.bilibili.com/x/vip/web/vip_center/v2';
         $payload = [
-            'csrf' => $user['csrf'],
+            'csrf' => $this->request()->csrfValue(),
         ];
-        $headers = array_merge([], self::$headers);
-        return Request::getJson(true, 'app', $url, Sign::common($payload), $headers);
+
+        return $this->decodeGet('app', $url, $this->request()->signCommonPayload($payload), $this->headers, 'vip.center.v2');
     }
 }

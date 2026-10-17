@@ -1,204 +1,219 @@
 <?php declare(strict_types=1);
 
-/**
- *  Website: https://mudew.com/
- *  Author: Lkeme
- *  License: The MIT License
- *  Email: Useri@live.cn
- *  Updated: 2018 ~ 2026
- *
- *   _____   _   _       _   _   _   _____   _       _____   _____   _____
- *  |  _  \ | | | |     | | | | | | | ____| | |     |  _  \ | ____| |  _  \ &   ／l、
- *  | |_| | | | | |     | | | |_| | | |__   | |     | |_| | | |__   | |_| |   （ﾟ､ ｡ ７
- *  |  _  { | | | |     | | |  _  | |  __|  | |     |  ___/ |  __|  |  _  /  　 \、ﾞ ~ヽ   *
- *  | |_| | | | | |___  | | | | | | | |___  | |___  | |     | |___  | | \ \   　じしf_, )ノ
- *  |_____/ |_| |_____| |_| |_| |_| |_____| |_____| |_|     |_____| |_|  \_\
- */
-
 namespace Bhp\Log;
 
-use Bhp\Request\Request;
-use Monolog\Logger;
+use Bhp\Runtime\AppContext;
 use Monolog\Handler\StreamHandler;
-use Bramus\Monolog\Formatter\ColoredLineFormatter;
-use Bhp\Util\DesignPattern\SingleTon;
+use Monolog\Logger;
 
-class Log extends SingleTon
+class Log
 {
-    /**
-     * @var Logger|null
-     */
     protected ?Logger $_logger = null;
 
     /**
-     * @return void
+     * @var array<string, array<int, array<string, mixed>>>
      */
-    public function init(): void
-    {
+    protected array $contextStacks = [];
 
+    /**
+     * 初始化 Log
+     * @param AppContext $context
+     */
+    public function __construct(
+        private readonly AppContext $context,
+    ) {
     }
 
     /**
-     * 初始化日志服务
+     * 获取Logger
      * @return Logger
      */
     protected function getLogger(): Logger
     {
         if (!$this->_logger instanceof Logger) {
             $logger = new Logger('BHP');
-            // 日志等级 DEBUG ?? INFO
-            $handler = new StreamHandler('php://stdout', getEnable('debug') ? Logger::DEBUG : Logger::INFO);
-            $handler->setFormatter(new ColoredLineFormatter(null, null, 'Y-m-d H:i:s'));
+            $handler = new StreamHandler('php://stdout', $this->enabled('debug') ? Logger::DEBUG : Logger::INFO);
+            $handler->setFormatter(new ColoredLineFormatter(
+                '[%datetime%] %level_name%: %message%',
+                'Y-m-d H:i:s',
+                false,
+                true
+            ));
             $logger->pushHandler($handler);
             $this->_logger = $logger;
         }
+
         return $this->_logger;
     }
 
     /**
-     * 通用
+     * 处理日志
      * @param string $level
-     * @param string $msg
+     * @param string $message
      * @param array $context
      * @return void
      */
-    protected function log(string $level, string $msg, array $context = []): void
+    protected function log(string $level, string $message, array $context = []): void
     {
-        // 拼装信息内容
-        $message = $this->prefix() . $this->backtrace() . $msg;
-        // 写入文件
-        $this->writeLog($level, $message);
+        $context = $this->mergedContext($context);
+        $rendered = $this->prefix() . $this->callerLabel($context) . $message;
+        $this->writeLog($level, $rendered);
 
-        // DEBUG数据单独处理/不需要回调
-        if ($level == 'DEBUG') {
-            $this->getInstance()->getLogger()->debug($msg, $context);
+        if ($level === 'DEBUG') {
+            $this->getLogger()->debug($rendered);
+
             return;
         }
-        // 匹配等级
-        switch ($level) {
-            case 'INFO':
-                $level_id = Logger::INFO;
-                $this->getInstance()->getLogger()->info($message, $context);
-                break;
-            case 'NOTICE':
-                $level_id = Logger::NOTICE;
-                $this->getInstance()->getLogger()->notice($message, $context);
-                break;
-            case 'WARNING':
-                $level_id = Logger::WARNING;
-                $this->getInstance()->getLogger()->warning($message, $context);
-                break;
-            case 'ERROR':
-                $level_id = Logger::ERROR;
-                $this->getInstance()->getLogger()->error($message, $context);
-                break;
-            default:
-                $level_id = Logger::CRITICAL;
-                $this->getInstance()->getLogger()->critical($message, $context);
-                break;
+
+        $levelId = match ($level) {
+            'INFO' => Logger::INFO,
+            'NOTICE' => Logger::NOTICE,
+            'WARNING' => Logger::WARNING,
+            'ERROR' => Logger::ERROR,
+            default => Logger::CRITICAL,
+        };
+
+        match ($level) {
+            'INFO' => $this->getLogger()->info($rendered),
+            'NOTICE' => $this->getLogger()->notice($rendered),
+            'WARNING' => $this->getLogger()->warning($rendered),
+            'ERROR' => $this->getLogger()->error($rendered),
+            default => $this->getLogger()->critical($rendered),
+        };
+
+        $this->callback($levelId, $level, $rendered);
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     */
+    public function withScopedContext(array $context, callable $callback): mixed
+    {
+        $this->pushContext($context);
+
+        try {
+            return $callback();
+        } finally {
+            $this->popContext();
         }
-        // 回调
-        $this->callback($level_id, $level, $message);
     }
 
     /**
-     * 错误
+     * 记录Error
      * @param mixed $message
      * @param array $context
      * @return void
      */
-    public static function error(mixed $message, array $context = []): void
+    public function recordError(mixed $message, array $context = []): void
     {
-        self::getInstance()->log('ERROR', $message, $context);
+        $this->log('ERROR', (string)$message, $context);
     }
 
     /**
-     * 警告
+     * 记录Warning
      * @param mixed $message
      * @param array $context
      * @return void
      */
-    public static function warning(mixed $message, array $context = []): void
+    public function recordWarning(mixed $message, array $context = []): void
     {
-        self::getInstance()->log('WARNING', $message, $context);
+        $this->log('WARNING', (string)$message, $context);
     }
 
     /**
-     * 提醒
+     * 记录通知
      * @param mixed $message
      * @param array $context
      * @return void
      */
-    public static function notice(mixed $message, array $context = []): void
+    public function recordNotice(mixed $message, array $context = []): void
     {
-        self::getInstance()->log('NOTICE', $message, $context);
+        $this->log('NOTICE', (string)$message, $context);
     }
 
     /**
-     * 信息
+     * 记录信息
      * @param mixed $message
      * @param array $context
      * @return void
      */
-    public static function info(mixed $message, array $context = []): void
+    public function recordInfo(mixed $message, array $context = []): void
     {
-        self::getInstance()->log('INFO', $message, $context);
+        $this->log('INFO', (string)$message, $context);
     }
 
     /**
-     * 调试
+     * 记录Debug
      * @param mixed $message
      * @param array $context
      * @return void
      */
-    public static function debug(mixed $message, array $context = []): void
+    public function recordDebug(mixed $message, array $context = []): void
     {
-        self::getInstance()->log('DEBUG', $message, $context);
+        $this->log('DEBUG', (string)$message, $context);
     }
 
     /**
-     * 堆栈
+     * 处理backtrace
      * @return string
      */
     protected function backtrace(): string
     {
-        $backtraces = debug_backtrace();
-        return "(" . pathinfo(basename($backtraces[2]['file']))['filename'] . ") => ";
+        $backtraces = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
+        foreach ($backtraces as $frame) {
+            $file = $frame['file'] ?? null;
+            if (!is_string($file) || $file === '') {
+                continue;
+            }
+
+            $filename = pathinfo(basename($file), PATHINFO_FILENAME);
+            if ($filename === basename(str_replace('\\', '/', __CLASS__))) {
+                continue;
+            }
+
+            return '(' . $filename . ') => ';
+        }
+
+        return '(Log) => ';
     }
 
     /**
-     * 前缀
+     * 处理prefix
      * @return string
      */
     protected function prefix(): string
     {
-        if (getConf('print.multiple')) {
-            // return '[' . (getConf('print.user_identity') ?? getConf('login_account.username')) . ']';
-            return sprintf("[%s]", getConf('print.user_identity') ?? getConf('login_account.username'));
+        if ($this->config('print.multiple', false, 'bool')) {
+            return sprintf("[%s]", $this->config('print.user_identity') ?? $this->config('login_account.username'));
         }
+
         return '';
     }
 
     /**
-     * 写日志
+     * 处理write日志
      * @param string $type
      * @param string $message
+     * @return void
      */
     protected function writeLog(string $type, string $message): void
     {
-        if (getEnable('log')) {
-            if ($type == 'DEBUG' && !getEnable('debug')) {
-                return;
-            }
-            $filename = PROFILE_LOG_PATH . getConf('login_account.username') . ".log";
-            $date = date('[Y-m-d H:i:s] ');
-            $data = $date . ' Log.' . $type . ' ' . $message . PHP_EOL;
-            file_put_contents($filename, $data, FILE_APPEND);
+        if (!$this->enabled('log')) {
+            return;
         }
+
+        if ($type === 'DEBUG' && !$this->enabled('debug')) {
+            return;
+        }
+
+        $filename = $this->context->profileContext()->logPath() . $this->config('login_account.username') . '.log';
+        $date = date('[Y-m-d H:i:s] ');
+        $data = $date . ' Log.' . $type . ' ' . $message . PHP_EOL;
+        file_put_contents($filename, $data, FILE_APPEND);
     }
 
     /**
-     * 回调
+     * 处理callback
      * @param int $levelId
      * @param string $level
      * @param mixed $message
@@ -206,19 +221,110 @@ class Log extends SingleTon
      */
     protected function callback(int $levelId, string $level, mixed $message): void
     {
-        $callback_level = getConf('log.callback_level') ?? Logger::ERROR;
-        if ($levelId >= $callback_level) {
-            // Startup failed, given null value
-            if (is_null(getConf('log.callback'))) return;
-            //
-            $url = str_replace('{account}', $this->prefix(), getConf('log.callback'));
-            $url = str_replace('{level}', $level, $url);
-            $url = str_replace('{message}', urlencode($message), $url);
-            //
-            Request::single('get', str_replace(' ', '%20', $url));
+        $callbackLevel = $this->config('log.callback_level') ?? Logger::ERROR;
+        if ($levelId < $callbackLevel) {
+            return;
+        }
+
+        $callbackUrl = $this->config('log.callback');
+        if ($callbackUrl === null) {
+            return;
+        }
+
+        $url = str_replace('{account}', $this->prefix(), (string)$callbackUrl);
+        $url = str_replace('{level}', $level, $url);
+        $url = str_replace('{message}', urlencode((string)$message), $url);
+        $this->context->request()->sendSingle('get', str_replace(' ', '%20', $url));
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     */
+    protected function pushContext(array $context): void
+    {
+        $key = $this->currentContextKey();
+        $this->contextStacks[$key] ??= [];
+        $this->contextStacks[$key][] = $context;
+    }
+
+    /**
+     * 处理pop上下文
+     * @return void
+     */
+    protected function popContext(): void
+    {
+        $key = $this->currentContextKey();
+        if (!isset($this->contextStacks[$key])) {
+            return;
+        }
+
+        array_pop($this->contextStacks[$key]);
+        if ($this->contextStacks[$key] === []) {
+            unset($this->contextStacks[$key]);
         }
     }
 
+    /**
+     * @param array<string, mixed> $context
+     * @return array<string, mixed>
+     */
+    protected function mergedContext(array $context): array
+    {
+        $merged = [];
+        foreach ($this->contextStacks[$this->currentContextKey()] ?? [] as $item) {
+            $merged = array_replace($merged, $item);
+        }
+
+        return array_replace($merged, $context);
+    }
+
+    /**
+     * 处理current上下文键
+     * @return string
+     */
+    protected function currentContextKey(): string
+    {
+        $fiber = \Fiber::getCurrent();
+        if ($fiber === null) {
+            return 'main';
+        }
+
+        return 'fiber_' . spl_object_id($fiber);
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     */
+    protected function callerLabel(array $context): string
+    {
+        $caller = trim((string)($context['caller'] ?? $context['plugin'] ?? ''));
+        if ($caller === '') {
+            return $this->backtrace();
+        }
+
+        return '(' . $caller . ') => ';
+    }
+
+    /**
+     * 处理配置
+     * @param string $key
+     * @param mixed $default
+     * @param string $type
+     * @return mixed
+     */
+    protected function config(string $key, mixed $default = null, string $type = 'default'): mixed
+    {
+        return $this->context->config($key, $default, $type);
+    }
+
+    /**
+     * 处理enabled
+     * @param string $key
+     * @param bool $default
+     * @return bool
+     */
+    protected function enabled(string $key, bool $default = false): bool
+    {
+        return (bool)$this->config($key . '.enable', $default, 'bool');
+    }
 }
-
-

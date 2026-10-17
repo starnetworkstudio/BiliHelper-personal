@@ -17,10 +17,10 @@
 
 namespace Bhp\Util\Resource;
 
+use Bhp\Console\Cli\RuntimeException as CliRuntimeException;
 use Bhp\Util\Resource\Resource as EResource;
-use Bhp\Util\DesignPattern\SingleTon;
 
-abstract class BaseResource extends SingleTon
+abstract class BaseResource
 {
     /**
      * 配置对象变量
@@ -41,10 +41,10 @@ abstract class BaseResource extends SingleTon
     protected string $filepath = '';
 
     /**
-     * 最后访问文件时间
+     * 最后修改文件时间
      * @var int
      */
-    protected int $last_access = 0;
+    protected int $last_modified = 0;
 
     /**
      * 解析器
@@ -74,8 +74,7 @@ abstract class BaseResource extends SingleTon
     public function get(string $key, mixed $default = null, string $type = 'default'): mixed
     {
         // 判断是否被修改，否则重新加载文件
-        if (fileatime($this->filepath) != $this->last_access) {
-            // TODO 此处逻辑好像重复了
+        if ($this->getCurrentFileMTime($this->filepath) !== $this->last_modified) {
             $this->loadResource($this->filename, $this->parser);
         }
         return match ($type) {
@@ -114,7 +113,7 @@ abstract class BaseResource extends SingleTon
     protected function validateFile(string $filepath, string $filename): void
     {
         if (!is_file($filepath)) {
-            die("资源文件 $filename 加载失败，请参照文档查看或添加资源文件！");
+            throw new CliRuntimeException("资源文件 $filename 加载失败，请参照文档查看或添加资源文件！");
         }
     }
 
@@ -128,20 +127,30 @@ abstract class BaseResource extends SingleTon
     protected function saveInfo(string $filename, string $filepath, string $parser, Resource $resource): void
     {
         $this->filename = $filename;
-        // dirname($conf_filepath).DIRECTORY_SEPARATOR.$conf_filename;
         $this->filepath = $filepath;
         $this->resource = $resource;
         $this->parser = $parser;
-        $this->updateLastAccess();
+        $this->updateLastModified();
     }
 
     /**
      * 更新最新修改时间
      * @return void
      */
-    protected function updateLastAccess(): void
+    protected function updateLastModified(): void
     {
-        $this->last_access = fileatime($this->filepath);
+        $this->last_modified = $this->getCurrentFileMTime($this->filepath);
+    }
+
+    /**
+     * @param string $filepath
+     * @return int
+     */
+    protected function getCurrentFileMTime(string $filepath): int
+    {
+        $mtime = filemtime($filepath);
+
+        return $mtime === false ? 0 : $mtime;
     }
 
     /**

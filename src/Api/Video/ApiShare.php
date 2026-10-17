@@ -17,33 +17,38 @@
 
 namespace Bhp\Api\Video;
 
+use Bhp\Api\Support\AbstractApiClient;
 use Bhp\Request\Request;
-use Bhp\User\User;
 
-class ApiShare
+class ApiShare extends AbstractApiClient
 {
+    /**
+     * 初始化 ApiShare
+     * @param Request $request
+     */
+    public function __construct(
+        Request $request,
+    ) {
+        parent::__construct($request);
+    }
+
     /**
      * 分享视频
      * @param string $aid
      * @return array
      */
-    public static function share(string $aid): array
+    public function share(string $aid): array
     {
-        //
-        $user = User::parseCookie();
-        //
         $url = 'https://api.bilibili.com/x/web-interface/share/add';
-        //
         $payload = [
             'aid' => $aid,
-            'csrf' => $user['csrf'],
+            'csrf' => $this->request()->csrfValue(),
         ];
         $headers = [
             'origin' => 'https://www.bilibili.com',
             'Referer' => "https://www.bilibili.com/video/av$aid",
         ];
         // {"code":0,"message":"0","ttl":1}
-        return Request::postJson(true, 'pc', $url, $payload, $headers);
+        return $this->decodePost('pc', $url, $payload, $headers, 'video.share');
     }
-
 }

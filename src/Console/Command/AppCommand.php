@@ -17,11 +17,14 @@
 
 namespace Bhp\Console\Command;
 
-use Ahc\Cli\Input\Command;
-use Ahc\Cli\IO\Interactor;
+use Closure;
+use LogicException;
+use Bhp\Console\Cli\Command;
+use Bhp\Console\Cli\Interactor;
 use Bhp\Log\Log;
 use Bhp\Plugin\Plugin;
-use Bhp\Task\Task;
+use Bhp\Profile\ProfileCacheResetService;
+use Bhp\Scheduler\Scheduler;
 
 class AppCommand extends Command
 {
@@ -31,19 +34,30 @@ class AppCommand extends Command
     protected string $desc = '[主要模式] 默认功能';
 
     /**
-     *
+     * 初始化 AppCommand
+     * @param Log $log
+     * @param Closure $schedulerResolver
+     * @param Closure $pluginResolver
+     * @param Closure $cacheResetServiceResolver
      */
-    public function __construct()
-    {
+    public function __construct(
+        private readonly Log $log,
+        private readonly ?Closure $schedulerResolver = null,
+        private readonly ?Closure $pluginResolver = null,
+        private readonly ?Closure $cacheResetServiceResolver = null,
+    ) {
         parent::__construct('mode:app', $this->desc);
-        //
         $this
+            ->option('-r --reset-cache', '执行前清理当前 profile 缓存（默认保留登录态）')
+            ->option('-p --purge-auth', '清理缓存时同时清空登录态')
             ->usage(
-                '<bold>  $0</end> <comment>profile mode:app</end> ## 完整命令<eol/>' .
-                '<bold>  $0</end> <comment>profile m:a</end> ## 完整命令(缩写)<eol/>' .
-                '<bold>  $0</end> <comment>profile</end> ## 省略命令(保留profile命令)<eol/>' .
-                '<bold>  $0</end> <comment>mode:app</end> ## 省略命令(保留动作命令)<eol/>' .
-                '<bold>  $0</end> <comment>m:d</end> ## 省略命令(保留动作命令)(缩写)<eol/>'
+                '  $0 profile mode:app  完整命令' . PHP_EOL .
+                '  $0 profile m:a       完整命令(缩写)' . PHP_EOL .
+                '  $0 profile           省略动作命令' . PHP_EOL .
+                '  $0 mode:app          省略 profile 命令' . PHP_EOL .
+                '  $0 m:a               省略 profile 命令(缩写)' . PHP_EOL .
+                '  $0 m:a --reset-cache' . PHP_EOL .
+                '  $0 m:a --reset-cache --purge-auth'
             );
     }
 
@@ -60,13 +74,59 @@ class AppCommand extends Command
      */
     public function execute(): void
     {
-        Log::info("执行 $this->desc");
-        //
-        $plugins = Plugin::getPlugins();
-        foreach ($plugins as $plugin) {
-            Task::addTask($plugin['hook'], null);
+        $this->log->recordInfo("执行 $this->desc");
+        if ((bool)($this->values()['reset-cache'] ?? false) || (bool)($this->values()['purge-auth'] ?? false)) {
+            $this->log->recordInfo('主要模式: 进入前清理缓存');
+            $this->cacheResetService()->reset((bool)($this->values()['purge-auth'] ?? false));
         }
-        //
-        Task::execTasks();
+
+        $scheduler = $this->scheduler();
+        $scheduler->registerPlugins(array_values(array_filter(
+            $this->plugin()->plugins(),
+            static fn(array $plugin): bool => (($plugin['mode'] ?? 'app') !== 'script')
+        )));
+        $scheduler->run();
+    }
+
+    /**
+     * 处理scheduler
+     * @return Scheduler
+     */
+    private function scheduler(): Scheduler
+    {
+        $scheduler = $this->schedulerResolver instanceof Closure ? ($this->schedulerResolver)() : null;
+        if ($scheduler instanceof Scheduler) {
+            return $scheduler;
+        }
+
+        throw new LogicException('AppCommand scheduler dependency is not configured.');
+    }
+
+    /**
+     * 处理插件
+     * @return Plugin
+     */
+    private function plugin(): Plugin
+    {
+        $plugin = $this->pluginResolver instanceof Closure ? ($this->pluginResolver)() : null;
+        if ($plugin instanceof Plugin) {
+            return $plugin;
+        }
+
+        throw new LogicException('AppCommand plugin dependency is not configured.');
+    }
+
+    /**
+     * 处理缓存Reset服务
+     * @return ProfileCacheResetService
+     */
+    private function cacheResetService(): ProfileCacheResetService
+    {
+        $service = $this->cacheResetServiceResolver instanceof Closure ? ($this->cacheResetServiceResolver)() : null;
+        if ($service instanceof ProfileCacheResetService) {
+            return $service;
+        }
+
+        throw new LogicException('AppCommand cache reset dependency is not configured.');
     }
 }

@@ -17,22 +17,27 @@
 
 namespace Bhp\Api\Msg;
 
+use Bhp\Api\Support\AbstractApiClient;
 use Bhp\Request\Request;
-use Bhp\Sign\Sign;
-use Bhp\User\User;
+use Bhp\WbiSign\WbiSign;
 
-class ApiMsg
+class ApiMsg extends AbstractApiClient
 {
     /**
-     * @param int $room_id
-     * @param string $content
-     * @return array
+     * 初始化 ApiMsg
+     * @param Request $request
      */
-    public static function sendBarragePC(int $room_id, string $content): array
-    {
+    public function __construct(
+        Request $request,
+    ) {
+        parent::__construct($request);
+    }
 
-        $user = User::parseCookie();
-        $url = 'https://api.live.bilibili.com/msg/send';
+    /**
+     * @return array<string, mixed>
+     */
+    public function sendBarragePC(int $room_id, string $content): array
+    {
         $payload = [
             'color' => '16777215',
             'fontsize' => 25,
@@ -41,33 +46,54 @@ class ApiMsg
             'rnd' => 0,
             'bubble' => 0,
             'roomid' => $room_id,
-            'csrf' => $user['csrf'],
-            'csrf_token' => $user['csrf'],
+            'csrf' => $this->request()->csrfValue(),
+            'csrf_token' => $this->request()->csrfValue(),
         ];
 
-
-        $headers = [
+        return $this->decodePost('pc', 'https://api.live.bilibili.com/msg/send', $payload, [
             'origin' => 'https://live.bilibili.com',
-            'referer' => "https://live.bilibili.com/$room_id"
-        ];
-        return Request::postJson(true, 'pc', $url, $payload, $headers);
+            'referer' => "https://live.bilibili.com/{$room_id}",
+        ], 'msg.barrage.pc');
     }
 
-    public static function sendBarrageAPP(int $room_id, string $content): array
+    /**
+     * @return array<string, mixed>
+     */
+    public function sendBarrageAPP(int $room_id, string $content): array
     {
-        $user = User::parseCookie();
-        $url = 'https://api.live.bilibili.com/msg/send';
+        $csrf = $this->request()->csrfValue();
         $payload = [
-            'color' => '16777215',
-            'fontsize' => 25,
-            'mode' => 1,
+            'bubble' => 0,
             'msg' => $content,
-            'rnd' => 0,
+            'color' => 16777215,
+            'mode' => 1,
+            'room_type' => 0,
+            'jumpfrom' => 0,
+            'reply_mid' => 0,
+            'reply_attr' => 0,
+            'replay_dmid' => '',
+            'statistics' => '{"appId":100,"platform":5}',
+            'reply_type' => 0,
+            'reply_uname' => '',
+            'fontsize' => 25,
+            'rnd' => time(),
             'roomid' => $room_id,
-            'csrf' => $user['csrf'],
-            'csrf_token' => $user['csrf'],
+            'csrf' => $csrf,
+            'csrf_token' => $csrf,
         ];
-        return Request::postJson(true, 'app', $url, Sign::common($payload));
+
+        return $this->decodePostWithQuery(
+            'pc',
+            'https://api.live.bilibili.com/msg/send',
+            $payload,
+            WbiSign::encryption([
+                'web_location' => '444.8',
+            ]),
+            [
+                'origin' => 'https://live.bilibili.com',
+                'referer' => "https://live.bilibili.com/{$room_id}",
+            ],
+            'msg.barrage.app',
+        );
     }
 }
-

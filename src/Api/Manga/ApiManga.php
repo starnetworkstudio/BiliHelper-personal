@@ -17,48 +17,42 @@
 
 namespace Bhp\Api\Manga;
 
+use Bhp\Api\Support\AbstractApiClient;
 use Bhp\Request\Request;
-use Bhp\Sign\Sign;
 
-class ApiManga
+class ApiManga extends AbstractApiClient
 {
-
     /**
-     * 签到
-     * @return array
+     * 初始化 ApiManga
+     * @param Request $request
      */
-    public static function ClockIn(): array
-    {
-        $url = 'https://manga.bilibili.com/twirp/activity.v1.Activity/ClockIn';
-        $payload = [];
-        // {"code":0,"msg":"","data":{}}
-        // {"code":"invalid_argument","msg":"clockin clockin is duplicate","meta":{"argument":"clockin"}}
-        return Request::postJson(true, 'app', $url, Sign::common($payload));
-    }
-
-
-    /**
-     * 分享
-     * @return array
-     */
-    public static function ShareComic(): array
-    {
-        $url = 'https://manga.bilibili.com/twirp/activity.v1.Activity/ShareComic';
-        $payload = [];
-        // {"code":0,"msg":"","data":{"point":5}}
-        // {"code":1,"msg":"","data":{"point":0}}
-        // {"code":0, "msg":"今日已分享"}
-        return Request::postJson(true, 'app', $url, Sign::common($payload));
+    public function __construct(
+        Request $request,
+    ) {
+        parent::__construct($request);
     }
 
     /**
-     * 签到信息
-     * @return array
+     * @return array<string, mixed>
      */
-    public static function GetClockInInfo(): array
+    public function ClockIn(): array
     {
-        $url = 'https://manga.bilibili.com/twirp/activity.v1.Activity/GetClockInInfo';
-        $payload = [];
-        return Request::postJson(true, 'app', $url, Sign::common($payload));
+        return $this->decodePost('app', 'https://manga.bilibili.com/twirp/activity.v1.Activity/ClockIn', $this->request()->signCommonPayload([]), [], 'manga.clock_in');
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function ShareComic(): array
+    {
+        return $this->decodePost('app', 'https://manga.bilibili.com/twirp/activity.v1.Activity/ShareComic', $this->request()->signCommonPayload([]), [], 'manga.share');
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function GetClockInInfo(): array
+    {
+        return $this->decodePost('app', 'https://manga.bilibili.com/twirp/activity.v1.Activity/GetClockInInfo', $this->request()->signCommonPayload([]), [], 'manga.clock_in_info');
     }
 }

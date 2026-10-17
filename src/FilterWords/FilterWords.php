@@ -17,15 +17,20 @@
 
 namespace Bhp\FilterWords;
 
+use Bhp\Profile\ProfileContext;
 use Bhp\Util\Resource\BaseResource;
 
 class FilterWords extends BaseResource
 {
     /**
+     * 初始化 FilterWords
+     * @param ProfileContext $profileContext
      * @param string $filename
-     * @return void
      */
-    public function init(string $filename = 'filter_library.json'): void
+    public function __construct(
+        private readonly ProfileContext $profileContext,
+        string $filename = 'filter/library.json',
+    )
     {
         $this->loadResource($filename, 'json');
     }
@@ -37,6 +42,6 @@ class FilterWords extends BaseResource
      */
     protected function getFilePath(string $filename): string
     {
-        return str_replace("\\", "/", APP_RESOURCES_PATH . $filename);
+        return str_replace("\\", "/", $this->profileContext->resourcesPath() . $filename);
     }
 }

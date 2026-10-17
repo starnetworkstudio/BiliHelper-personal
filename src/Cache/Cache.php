@@ -17,146 +17,157 @@
 
 namespace Bhp\Cache;
 
-use Bhp\Util\DesignPattern\SingleTon;
-use Flintstone\Flintstone;
-use Flintstone\Formatter\JsonFormatter;
-use Overtrue\Pinyin\Pinyin;
+use Bhp\Profile\ProfileContext;
+use Bhp\Util\AppTerminator;
 
-class Cache extends SingleTon
+class Cache
 {
-    // 文档
-    //matomo-org/component-cache
-    // https://www.xeweb.net/flintstone/documentation/
+    /**
+     * @var array<string, true>
+     */
+    protected array $initializedScopes = [];
+
+    protected ?CacheStoreInterface $store = null;
+    private readonly string $databasePath;
 
     /**
-     * @var array|null
+     * 初始化 Cache
+     * @param ProfileContext $profileContext
      */
-    protected ?array $caches = [];
-
-    /**
-     * @var Flintstone
-     */
-    protected Flintstone $cache;
-
-    /**
-     * @return void
-     */
-    public function init(): void
+    public function __construct(ProfileContext $profileContext)
     {
+        $this->databasePath = $profileContext->cachePath() . 'cache.sqlite3';
+        $this->store = new SqliteCacheStore($this->databasePath);
     }
 
     /**
-     * @param string|null $classname
+     * 初始化ializeScope
+     * @param string $classname
      * @return void
      */
-    public static function initCache(?string $classname = null): void
+    public function initializeScope(?string $classname = null): void
     {
-        $class_name = $classname ?? self::getInstance()->getCallClassName();
-        //
-        if (!array_key_exists($class_name, self::getInstance()->caches)) {
-            // 判断字符串中是否有中文
-            if (preg_match("/[\x7f-\xff]/", $class_name)) {
-                $pinyin = new Pinyin(); // 默认
-                $class_name = $pinyin->permalink($class_name); // yong-hu-ming
-            }
-            // 如果不存在缓存 初始化
-            $database = self::getInstance()->removeSpecStr('cache_' . $class_name);
-            $options = [
-                'dir' => PROFILE_CACHE_PATH,
-                'gzip' => true,
-                'formatter' => new JsonFormatter()
-            ];
-            self::getInstance()->caches[$class_name] = new Flintstone($database, $options);
-            // ->set('bob', ['email' => 'bob@site.com', 'password' => '123456']);
+        $scope = $this->resolveScope($classname);
+        if (isset($this->initializedScopes[$scope])) {
+            return;
         }
 
+        $this->initializedScopes[$scope] = true;
     }
 
     /**
-     * 写入值
+     * 处理put
      * @param string $key
      * @param mixed $value
-     * @param string|null $classname
+     * @param string $classname
      * @return void
      */
-    public static function set(string $key, mixed $value, ?string $classname = null): void
+    public function put(string $key, mixed $value, ?string $classname = null): void
     {
-        // Set a key
-        // $users->set('bob', ['email' => 'bob@site.com', 'password' => '123456']);
-        // echo "Set|{$classname}|Key|{$key}|Value|{$value}" . PHP_EOL;
-        self::getInstance()->getCache($classname)->set($key, $value);
+        $scope = $this->ensureScopeInitialized($classname);
+        $this->store()->set($scope, $key, $value);
     }
 
     /**
-     * 获取值
+     * 处理pull
      * @param string $key
-     * @param string|null $classname
-     * @return false|mixed
+     * @param string $classname
+     * @return mixed
      */
-    public static function get(string $key, ?string $classname = null): mixed
+    public function pull(string $key, ?string $classname = null): mixed
     {
-        // Get a key
-        // $user = $users->get('bob');
-        // echo 'Bob, your email is ' . $user['email'];
-        // $value = self::getInstance()->getCache($classname)->get($key);
-        // echo "Get|{$classname}|Key|{$key}|Value|{$value}" . PHP_EOL;
-        return self::getInstance()->getCache($classname)->get($key);
+        $scope = $this->ensureScopeInitialized($classname);
+
+        return $this->store()->get($scope, $key);
     }
 
     /**
-     * 强转一下类型
-     * @param string|null $classname
-     * @return Flintstone
+     * 处理flush
+     * @return void
      */
-    protected function getCache(?string $classname = null): Flintstone
+    public function flush(): void
     {
-        $class_name = $classname ?? $this->getCallClassName();
-        if (!array_key_exists($class_name, $this->caches)) {
-            failExit("当前类 $class_name 并未初始化缓存");
+        $this->initializedScopes = [];
+        $this->store()->clear();
+    }
+
+    /**
+     * @return string[]
+     */
+    public function scopes(): array
+    {
+        return $this->store()->scopes();
+    }
+
+    /**
+     * 处理ensureScopeInitialized
+     * @param string $classname
+     * @return string
+     */
+    protected function ensureScopeInitialized(?string $classname = null): string
+    {
+        $scope = $this->resolveScope($classname);
+        $this->initializeScope($classname);
+
+        return $scope;
+    }
+
+    /**
+     * 解析Scope
+     * @param string $classname
+     * @return string
+     */
+    protected function resolveScope(?string $classname = null): string
+    {
+        $scope = trim((string)($classname ?? $this->getCallClassName()));
+        if ($scope === '') {
+            AppTerminator::fail('缓存 scope 不能为空');
         }
-        return $this->caches[$class_name];
+
+        if (preg_match('/[\x7f-\xff]/', $scope)) {
+            $scope = 'scope_' . substr(sha1($scope), 0, 16);
+        }
+
+        return $this->removeSpecStr($scope);
     }
 
     /**
-     * 获取调用者类名
+     * 处理存储
+     * @return CacheStoreInterface
+     */
+    protected function store(): CacheStoreInterface
+    {
+        return $this->store ??= new SqliteCacheStore($this->databasePath);
+    }
+
+    /**
+     * 获取CallClass名称
      * @return string
      */
     protected function getCallClassName(): string
     {
-        // basename(str_replace('\\', '/', __CLASS__));
-        $backtraces = debug_backtrace();
-        $temp = pathinfo(basename($backtraces[1]['file']))['filename'];
-        //
-        if ($temp == basename(str_replace('\\', '/', __CLASS__))) {
-            return pathinfo(basename($backtraces[2]['file']))['filename'];
-        } else {
-            return $temp;
+        $backtraces = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
+        $temp = pathinfo(basename($backtraces[1]['file'] ?? ''))['filename'] ?? '';
+
+        if ($temp === basename(str_replace('\\', '/', __CLASS__))) {
+            return pathinfo(basename($backtraces[2]['file'] ?? ''))['filename'] ?? '';
         }
+
+        return $temp;
     }
 
     /**
-     * 去除特殊符号
+     * 删除或清理SpecStr
      * @param string $str
      * @return string
      */
     protected function removeSpecStr(string $str): string
     {
-        $specs = str_split("-.,:;'*?~`!@#$%^&+=)(<>{}]|\/、");
+        $specs = str_split("-.,:;'*?~`!@#$%^&+=)(<>{}]|\\/、");
         foreach ($specs as $spec) {
             $str = str_replace($spec, '', $str);
         }
-        return $str;
-    }
 
-    /**
-     * 获取调用链类
-     * @return mixed
-     */
-    protected function backtraceClass(): mixed
-    {
-        // TODO 耦合度过高  需要解耦
-        $backtraces = debug_backtrace();
-        array_shift($backtraces);
-        return pathinfo(basename($backtraces[2]['file']))['filename'];
+        return $str;
     }
 }

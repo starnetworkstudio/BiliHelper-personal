@@ -17,8 +17,6 @@
 
 namespace Bhp\Util\AsciiTable;
 
-use AsciiTable\Builder;
-use AsciiTable\Exception\BuilderException;
 use Closure;
 
 class AsciiTable
@@ -68,6 +66,11 @@ class AsciiTable
     protected mixed $formatter;
 
     /**
+     * @var string|null
+     */
+    protected ?string $title;
+
+    /**
      * @param array $data
      */
     public function __construct(array $data = [])
@@ -76,6 +79,7 @@ class AsciiTable
             ->setIndentation('')
             ->setKeysAlignment(self::AlignCenter)
             ->setValuesAlignment(self::AlignLeft)
+            ->setTitle(null)
             ->setFormatter(null);
     }
 
@@ -97,10 +101,22 @@ class AsciiTable
             $this->setData($data);
 
         $data = $this->prepare();
+        $this->expandWidthsForTitle();
 
         $i = $this->indentation;
 
+        if ($this->keys === []) {
+            return $this->renderTitleOnlyTable($i);
+        }
+
         $table = $i . $this->line('┌', '─', '┬', '┐') . PHP_EOL;
+
+        if ($this->title !== null && $this->title !== '') {
+            $table .= $i . $this->fullWidthRow($this->title, self::AlignCenter) . PHP_EOL;
+            if ($this->displayHeader || $data !== []) {
+                $table .= $i . $this->line('├', '─', '┬', '┤') . PHP_EOL;
+            }
+        }
 
         if ($this->displayHeader) {
             //绘制table header
@@ -115,6 +131,18 @@ class AsciiTable
         $table .= $i . $this->line('└', '─', '┴', '┘') . PHP_EOL;
 
         return $table;
+    }
+
+    /**
+     * @param string|null $title
+     * @return $this
+     */
+    public function setTitle(?string $title): static
+    {
+        $title = trim((string)$title);
+        $this->title = $title !== '' ? $title : null;
+
+        return $this;
     }
 
     /**
@@ -176,6 +204,8 @@ class AsciiTable
      */
     protected function line(?string $left, string $horizontal, string $link, ?string $right): string
     {
+        $left = $left ?? '';
+        $right = $right ?? '';
         $line = $left;
         foreach ($this->keys as $key) {
             $line .= str_repeat($horizontal, $this->widths[$key] + 2) . $link;
@@ -203,6 +233,17 @@ class AsciiTable
             $line .= '│';
         }
         return $line;
+    }
+
+    /**
+     * @param int $alignment
+     * @return string
+     */
+    protected function fullWidthRow(string $value, int $alignment): string
+    {
+        $innerWidth = max(2, $this->innerWidth());
+
+        return '│ ' . $this->mbStrPad($value, $innerWidth - 2, ' ', $alignment) . ' │';
     }
 
     /**
@@ -258,8 +299,6 @@ class AsciiTable
         if (!isset($this->widths[$key])) {
             $this->widths[$key] = 0;
         }
-        // Deprecated: strlen(): Passing null to parameter #1 ($string) of type string is deprecated
-        // Deprecated: mb_strlen(): Passing null to parameter #1 ($string) of type string is deprecated
         $value = (string)($value ?: '');
         $width = (strlen($value) + mb_strlen($value, 'UTF8')) / 2;
         if ($width > $this->widths[$key]) {
@@ -286,11 +325,6 @@ class AsciiTable
      */
     protected function mbStrPad(string $input, int $pad_length, string $pad_string = ' ', int $pad_type = STR_PAD_RIGHT, ?string $encoding = null): string
     {
-        // $encoding = $encoding === null ? mb_internal_encoding() : $encoding;
-        // $diff = strlen($input) - (strlen($input) + mb_strlen($input, $encoding)) / 2;
-        // return str_pad($input, $pad_length + $diff, $pad_string, $pad_type);
-
-        // https://github.com/viossat/arraytotexttable/blob/6b1af924478cb9c3a903269e304fff006fe0dbf4/src/ArrayToTextTable.php#L255
         $encoding = $encoding === null ? mb_internal_encoding() : $encoding;
         $pad_before = $pad_type === STR_PAD_BOTH || $pad_type === STR_PAD_LEFT;
         $pad_after = $pad_type === STR_PAD_BOTH || $pad_type === STR_PAD_RIGHT;
@@ -333,20 +367,11 @@ class AsciiTable
      */
     protected function asciiColorWrap(string $string, string $color): string
     {
-//        30: 黑
-//        31: 红
-//        32: 绿
-//        33: 黄
-//        34: 蓝
-//        35: 紫
-//        36: 深绿
-//        37: 白色
         return "\033[1;" . $color . 'm' . $string . "\033[0m";
     }
 
-
     /**
-     * 数组转表格(外置)
+     * 数组转表格
      * @param array $data
      * @param string|null $title
      * @param bool $print
@@ -354,21 +379,104 @@ class AsciiTable
      */
     public static function array2table(array $data, ?string $title = null, bool $print = false): array
     {
-        $th_list = [];
-        //
-        $builder = new Builder();
-        $builder->addRows($data);
-        //
-        if (!is_null($title)) {
-            $builder->setTitle($title);
-        }
-        //
-        foreach (explode("\r\n", $builder->renderTable()) as $value) {
-            if ($value) {
-                $th_list[] = $value;
-                if ($print) echo $value . PHP_EOL;
+        $renderer = new self($data);
+        $renderer->setTitle($title);
+        $table = rtrim($renderer->getTable());
+        $th_list = $table === '' ? [] : (preg_split('/\R/u', $table) ?: []);
+
+        if ($print) {
+            foreach ($th_list as $value) {
+                echo $value . PHP_EOL;
             }
         }
+
         return $th_list;
+    }
+
+    /**
+     * 处理displayWidth
+     * @param string $value
+     * @return int
+     */
+    protected static function displayWidth(string $value): int
+    {
+        return (int)((strlen($value) + mb_strlen($value, 'UTF-8')) / 2);
+    }
+
+    /**
+     * 处理padDisplay
+     * @param string $value
+     * @param int $width
+     * @param int $alignment
+     * @return string
+     */
+    protected static function padDisplay(string $value, int $width, int $alignment): string
+    {
+        $visible = self::displayWidth($value);
+        $padding = max(0, $width - $visible);
+        if ($alignment === STR_PAD_LEFT) {
+            return str_repeat(' ', $padding) . $value;
+        }
+
+        if ($alignment === STR_PAD_BOTH) {
+            $left = intdiv($padding, 2);
+            $right = $padding - $left;
+            return str_repeat(' ', $left) . $value . str_repeat(' ', $right);
+        }
+
+        return $value . str_repeat(' ', $padding);
+    }
+
+    /**
+     * @return void
+     */
+    protected function expandWidthsForTitle(): void
+    {
+        if ($this->title === null || $this->title === '' || $this->keys === []) {
+            return;
+        }
+
+        $requiredInnerWidth = self::displayWidth($this->title) + 2;
+        $currentInnerWidth = $this->innerWidth();
+        if ($requiredInnerWidth <= $currentInnerWidth) {
+            return;
+        }
+
+        $lastKey = end($this->keys);
+        if ($lastKey === false) {
+            return;
+        }
+
+        $this->widths[$lastKey] = ($this->widths[$lastKey] ?? 0) + ($requiredInnerWidth - $currentInnerWidth);
+    }
+
+    /**
+     * 处理innerWidth
+     * @return int
+     */
+    protected function innerWidth(): int
+    {
+        if ($this->keys === []) {
+            return $this->title === null ? 0 : self::displayWidth($this->title) + 2;
+        }
+
+        return array_sum($this->widths) + count($this->keys) * 3 - 1;
+    }
+
+    /**
+     * 处理renderTitleOnly表格
+     * @param string $indentation
+     * @return string
+     */
+    protected function renderTitleOnlyTable(string $indentation): string
+    {
+        if ($this->title === null || $this->title === '') {
+            return '';
+        }
+
+        $width = self::displayWidth($this->title) + 2;
+        return $indentation . '┌' . str_repeat('─', $width) . '┐' . PHP_EOL
+            . $indentation . '│ ' . $this->title . ' │' . PHP_EOL
+            . $indentation . '└' . str_repeat('─', $width) . '┘' . PHP_EOL;
     }
 }

@@ -17,12 +17,34 @@
 
 namespace Bhp\Api\Api\X\Relation;
 
+use Bhp\Api\Support\AbstractApiClient;
 use Bhp\Request\Request;
-use Bhp\Sign\Sign;
-use Bhp\User\User;
 
-class ApiRelation
+class ApiRelation extends AbstractApiClient
 {
+    public const ACTION_FOLLOW = 1;
+    public const ACTION_UNFOLLOW = 2;
+
+    public const ATTRIBUTE_NONE = 0;
+    public const ATTRIBUTE_SECRET_FOLLOW = 1;
+    public const ATTRIBUTE_FOLLOWING = 2;
+    public const ATTRIBUTE_MUTUAL_FOLLOW = 6;
+    public const ATTRIBUTE_BLOCKED = 128;
+
+    public const SOURCE_DEFAULT = 11;
+    public const SOURCE_CREATOR_INCENTIVE = 192;
+    public const SOURCE_ACTIVITY_PAGE = 222;
+
+    /**
+     * 初始化 ApiRelation
+     * @param Request $request
+     */
+    public function __construct(
+        Request $request,
+    ) {
+        parent::__construct($request);
+    }
+
     /**
      * 关注列表
      * @param int $pn
@@ -31,24 +53,23 @@ class ApiRelation
      * @param string $order_type
      * @return array
      */
-    public static function followings(int $pn = 1, int $ps = 20, string $order = 'desc', string $order_type = 'order_type'): array
+    public function followings(int $pn = 1, int $ps = 20, string $order = 'desc', string $order_type = 'order_type'): array
     {
-        $user = User::parseCookie();
-        //
         $url = 'https://api.bilibili.com/x/relation/followings';
+        $uid = $this->request()->uidValue();
         $headers = [
             'origin' => 'https://space.bilibili.com',
-            'referer' => "https://space.bilibili.com/{$user['uid']}/fans/follow"
+            'referer' => "https://space.bilibili.com/{$uid}/fans/follow",
         ];
         $payload = [
-            'vmid' => $user['uid'],
+            'vmid' => $uid,
             'pn' => $pn,
             'ps' => $ps,
             'order' => $order,
             'order_type' => $order_type,
         ];
-        //
-        return Request::getJson(true, 'pc', $url, $payload, $headers);
+
+        return $this->decodeGet('pc', $url, $payload, $headers, 'relation.followings');
     }
 
 
@@ -56,18 +77,16 @@ class ApiRelation
      * 获取关注分组列表
      * @return array
      */
-    public static function tags(): array
+    public function tags(): array
     {
-        $user = User::parseCookie();
-        //
+        $uid = $this->request()->uidValue();
         $url = 'https://api.bilibili.com/x/relation/tags';
         $headers = [
             'origin' => 'https://space.bilibili.com',
-            'referer' => "https://space.bilibili.com/{$user['uid']}/fans/follow"
+            'referer' => "https://space.bilibili.com/{$uid}/fans/follow",
         ];
-        $payload = [];
-        //
-        return Request::getJson(true, 'pc', $url, $payload, $headers);
+
+        return $this->decodeGet('pc', $url, [], $headers, 'relation.tags');
     }
 
     /**
@@ -77,23 +96,42 @@ class ApiRelation
      * @param int $ps
      * @return array
      */
-    public static function tag(int $tag_id, int $pn = 1, int $ps = 20): array
+    public function tag(int $tag_id, int $pn = 1, int $ps = 20): array
     {
-        $user = User::parseCookie();
-        //
+        $uid = $this->request()->uidValue();
         $url = 'https://api.bilibili.com/x/relation/tag';
         $headers = [
             'origin' => 'https://space.bilibili.com',
-            'referer' => "https://space.bilibili.com/{$user['uid']}/fans/follow"
+            'referer' => "https://space.bilibili.com/{$uid}/fans/follow",
         ];
         $payload = [
-            'mid' => $user['uid'],
+            'mid' => $uid,
             'tagid' => $tag_id,
             'pn' => $pn,
             'ps' => $ps,
         ];
-        //
-        return Request::getJson(true, 'pc', $url, $payload, $headers);
+
+        return $this->decodeGet('pc', $url, $payload, $headers, 'relation.tag');
+    }
+
+    /**
+     * 查询用户与当前账号的互相关系
+     * @param int $uid
+     * @return array
+     */
+    public function relationWithSelf(int $uid): array
+    {
+        $currentUid = $this->request()->uidValue();
+        $url = 'https://api.bilibili.com/x/web-interface/relation';
+        $headers = [
+            'origin' => 'https://space.bilibili.com',
+            'referer' => "https://space.bilibili.com/{$currentUid}",
+        ];
+        $payload = [
+            'mid' => $uid,
+        ];
+
+        return $this->decodeGet('pc', $url, $payload, $headers, 'relation.self');
     }
 
 
@@ -102,22 +140,72 @@ class ApiRelation
      * @param int $uid
      * @return array
      */
-    public static function modify(int $uid): array
+    public function modify(int $uid): array
     {
-        $user = User::parseCookie();
-        //
+        return $this->act($uid, self::ACTION_UNFOLLOW, self::SOURCE_DEFAULT);
+    }
+
+    /**
+     * 关注
+     * @param int $uid
+     * @param int $source
+     * @return array
+     */
+    public function follow(int $uid, int $source = self::SOURCE_ACTIVITY_PAGE): array
+    {
+        return $this->act($uid, self::ACTION_FOLLOW, $source);
+    }
+
+    /**
+     * B 站 relation attribute 为枚举值，不是 bitmask。
+     * 1=悄悄关注（已下线，兼容历史值），2=已关注，6=已互粉。
+     */
+    public static function isFollowingAttribute(int $attribute): bool
+    {
+        return in_array($attribute, [
+            self::ATTRIBUTE_SECRET_FOLLOW,
+            self::ATTRIBUTE_FOLLOWING,
+            self::ATTRIBUTE_MUTUAL_FOLLOW,
+        ], true);
+    }
+
+    /**
+     * x/web-interface/relation 的实时返回里，当前用户对目标用户的关系在 data.relation.attribute。
+     * data.be_relation.attribute 表示目标用户对当前用户的关系。
+     *
+     * @param array<string, mixed> $response
+     */
+    public static function extractCurrentUserRelationAttribute(array $response): ?int
+    {
+        $attribute = $response['data']['relation']['attribute'] ?? null;
+        if (!is_numeric($attribute)) {
+            return null;
+        }
+
+        return (int)$attribute;
+    }
+
+    /**
+     * @param int $uid
+     * @param int $act
+     * @param int $source
+     * @return array
+     */
+    protected function act(int $uid, int $act, int $source): array
+    {
+        $currentUid = $this->request()->uidValue();
         $url = 'https://api.bilibili.com/x/relation/modify';
         $headers = [
             'origin' => 'https://space.bilibili.com',
-            'referer' => "https://space.bilibili.com/{$user['uid']}/fans/follow"
+            'referer' => "https://space.bilibili.com/{$currentUid}/fans/follow",
         ];
         $payload = [
             'fid' => $uid,
-            'act' => 2,
-            're_src' => 11,
-            'csrf' => $user['csrf'],
+            'act' => $act,
+            're_src' => $source,
+            'csrf' => $this->request()->csrfValue(),
         ];
-        //
-        return Request::postJson(true, 'pc', $url, $payload, $headers);
+
+        return $this->decodePost('pc', $url, $payload, $headers, 'relation.modify');
     }
 }

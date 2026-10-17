@@ -17,17 +17,44 @@
 
 namespace Bhp\Device;
 
+use Bhp\Profile\ProfileContext;
+use Bhp\Util\Resource\Resource;
 use Bhp\Util\Resource\BaseResource;
+use Symfony\Component\Yaml\Yaml;
 
 class Device extends BaseResource
 {
     /**
+     * 初始化 Device
+     * @param ProfileContext $profileContext
      * @param string $filename
-     * @return void
      */
-    public function init(string $filename = 'device.yaml'): void
+    public function __construct(
+        private readonly ProfileContext $profileContext,
+        string $filename = 'default.yaml',
+    )
     {
-        $this->loadResource($filename, 'yaml');
+        $filename = $filename === 'device.yaml' ? 'default.yaml' : $filename;
+        $defaultPath = $this->getFilePath($filename);
+        $this->validateFile($defaultPath, $filename);
+
+        $data = $this->readYamlFile($defaultPath);
+        $activePath = $defaultPath;
+
+        $replaceOverride = $this->profileDeviceOverridePath('device.override.yaml');
+        $mergeOverride = $this->profileDeviceOverridePath('device.override+.yaml');
+
+        if (is_file($replaceOverride)) {
+            $data = $this->readYamlFile($replaceOverride);
+            $activePath = $replaceOverride;
+        } elseif (is_file($mergeOverride)) {
+            $data = array_replace_recursive($data, $this->readYamlFile($mergeOverride));
+            $activePath = $mergeOverride;
+        }
+
+        $resource = new Resource();
+        $resource->loadData($data);
+        $this->saveInfo($filename, $activePath, 'yaml', $resource);
     }
 
     /**
@@ -37,26 +64,26 @@ class Device extends BaseResource
      */
     protected function getFilePath(string $filename): string
     {
-        return str_replace("\\", "/", PROFILE_DEVICE_PATH . $filename);
+        return str_replace("\\", "/", $this->profileContext->resourcesPath() . 'device/' . $filename);
     }
 
     /**
-     * 重写真实路径
+     * 处理画像Device OverridePath
      * @param string $filename
-     * @param string $default_filename
      * @return string
      */
-//    protected function getRealFileName(string $filename, string $default_filename): string
-//    {
-//        $prefix = str_replace(strrchr($filename, "."), "", $filename) . '_';
-//        $new_filename = $prefix . $default_filename;
-//        // 自定义设备
-//        if (is_file($this->getFilePath($new_filename))) {
-//            Log::info('使用自定义设备参数' . $new_filename);
-//            return $new_filename;
-//        } else {
-//            Log::info('使用默认设备参数' . $default_filename);
-//            return $default_filename;
-//        }
-//    }
+    protected function profileDeviceOverridePath(string $filename): string
+    {
+        return str_replace("\\", "/", $this->profileContext->rootPath() . 'resources/device/' . $filename);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    protected function readYamlFile(string $path): array
+    {
+        $data = Yaml::parseFile($path);
+
+        return is_array($data) ? $data : [];
+    }
 }

@@ -17,72 +17,57 @@
 
 namespace Bhp\Api\Vip;
 
+use Bhp\Api\Support\AbstractApiClient;
 use Bhp\Request\Request;
-use Bhp\User\User;
 use Bhp\WbiSign\WbiSign;
 
-class ApiUser
+class ApiUser extends AbstractApiClient
 {
     /**
-     * 用户VIP信息
-     * @return array
+     * 初始化 ApiUser
+     * @param Request $request
      */
-    public static function userVipInfo(): array
+    public function __construct(
+        Request $request,
+    ) {
+        parent::__construct($request);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function userVipInfo(): array
     {
-        $url = 'https://api.bilibili.com/x/vip/web/user/info';
-        $payload = [];
-        $headers = [
+        return $this->decodeGet('pc', 'https://api.bilibili.com/x/vip/web/user/info', [], [
             'origin' => 'https://account.bilibili.com',
-            'referer' => 'https://account.bilibili.com/account/home'
-        ];
-        // {"code":0,"message":"0","ttl":1,"data":{"mid":1234,"vip_type":2,"vip_status":1,"vip_due_date":1667750400000,"vip_pay_type":0,"theme_type":0,"label":{"text":"年度大会员","label_theme":"annual_vip","text_color":"#FFFFFF","bg_style":1,"bg_color":"#FB7299","border_color":""},"avatar_subscript":1,"avatar_subscript_url":"http://i0.hdslb.com/bfs/vip/icon_Certification_big_member_22_3x.png","nickname_color":"#FB7299","is_new_user":false}}
-        return Request::getJson(true, 'pc', $url, $payload, $headers);
+            'referer' => 'https://account.bilibili.com/account/home',
+        ], 'vip.user.info');
     }
 
     /**
-     * 用户NAV信息
-     * @return array
+     * @return array<string, mixed>
      */
-    public static function userNavInfo(): array
+    public function userNavInfo(): array
     {
-        $user = User::parseCookie();
-        //
-        $url = 'https://api.bilibili.com/x/web-interface/nav';
-        $payload = [];
-        $headers = [
+        return $this->decodeGet('pc', 'https://api.bilibili.com/x/web-interface/nav', [], [
             'origin' => 'https://space.bilibili.com',
-            'referer' => 'https://space.bilibili.com/' . $user['uid']
-        ];
-        // {"code":-101,"message":"账号未登录","ttl":1,"data":{"isLogin":false,"wbi_img":{"img_url":"https://i0.hdslb.com/bfs/wbi/d2f367bf78934216b7fc14b6e80bb705.png","sub_url":"https://i0.hdslb.com/bfs/wbi/91246ef1d9a6446e9665517705c08269.png"}}}
-        return Request::getJson(true, 'pc', $url, $payload, $headers);
+            'referer' => 'https://space.bilibili.com/' . $this->request()->uidValue(),
+        ], 'vip.user.nav');
     }
 
     /**
-     * 用户SPACE信息
-     * @param int $uid
-     * @return array
+     * @return array<string, mixed>
      */
-    public static function userSpaceInfo(int $uid = 0): array
+    public function userSpaceInfo(int $uid = 0): array
     {
-        if ($uid == 0) {
-            $user = User::parseCookie();
-            $uid = $user['uid'];
-        }
-        //
-        $url = 'https://api.bilibili.com/x/space/wbi/acc/info';
-        //
-        $payload = [
+        $uid = $uid !== 0 ? $uid : (int)$this->request()->uidValue();
+
+        return $this->decodeGet('pc', 'https://api.bilibili.com/x/space/wbi/acc/info', WbiSign::encryption([
             'mid' => $uid,
             'platform' => 'web',
-            // 'wts'=>time(),
-            // 'w_rid'=>'',
-        ];
-        $headers = [
+        ]), [
             'origin' => 'https://www.bilibili.com',
             'referer' => 'https://www.bilibili.com/',
-        ];
-        return Request::getJson(true, 'pc', $url, WbiSign::encryption($payload), $headers);
+        ], 'vip.user.space');
     }
-
-
 }

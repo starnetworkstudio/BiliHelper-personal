@@ -6,9 +6,9 @@
     "raw_url": "https://raw.githubusercontent.com/lkeme/BiliHelper-personal/master/resources/version.json",
     "master_raw_url": "https://raw.githubusercontent.com/lkeme/BiliHelper-personal/master/resources/version.json",
     "dev_raw_url": "https://raw.githubusercontent.com/lkeme/BiliHelper-personal/dev/resources/version.json",
-    "master_purge_url": "https://cdn.staticaly.com/gh/lkeme/BiliHelper-personal/master/resources/version.json",
-    "dev_purge_url": "https://cdn.staticaly.com/gh/lkeme/BiliHelper-personal/dev/resources/version.json",
-    "version": "2.5.1.250904",
-    "update_time": "2025-09-04",
+    "master_purge_url": "https://fastly.jsdelivr.net/gh/lkeme/BiliHelper-personal@master/resources/version.json",
+    "dev_purge_url": "https://fastly.jsdelivr.net/gh/lkeme/BiliHelper-personal@dev/resources/version.json",
+    "version": "3.2.0.260810",
+    "update_time": "2026-08-10",
     "update_description": "程序有更新，请及时线上查看更新哦~"
 }

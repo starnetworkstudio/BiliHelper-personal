@@ -1,0 +1,261 @@
+<?php declare(strict_types=1);
+
+namespace Bhp\Plugin\Builtin\ActivityLottery;
+
+use Bhp\Api\Api\X\Activity\ApiActivity;
+use Bhp\Api\Api\X\ActivityComponents\ApiMission;
+use Bhp\Api\Api\X\Relation\ApiRelation;
+use Bhp\Api\Api\X\Player\ApiPlayer;
+use Bhp\Api\Api\X\Task\ApiTask as EraTaskApi;
+use Bhp\Api\Dynamic\ApiTopic;
+use Bhp\Api\Video\ApiWatch;
+use Bhp\Api\XLive\DataInterface\V1\X25Kn\ApiTrace;
+use Bhp\Api\XLive\WebInterface\V1\Second\ApiList;
+use Bhp\Api\XLive\WebInterface\V1\WebMain\ApiRecommend;
+use Bhp\Api\XLive\WebRoom\V1\Index\ApiIndex;
+use Bhp\Automation\Watch\LiveWatchService;
+use Bhp\Automation\Watch\VideoWatchService;
+use Bhp\Plugin\BasePlugin;
+use Bhp\Plugin\Contract\PluginTaskInterface;
+use Bhp\Plugin\Plugin;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Catalog\ActivityCatalogLoader;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Catalog\ActivityCatalogValidator;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Catalog\LocalCatalogSource;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Catalog\RemoteCatalogSource;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Flow\ActivityFlowStore;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Flow\ActivityFlowPlanner;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Gateway\WatchVideoGateway;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Gateway\WatchLiveGateway;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Node\CleanupUnfollowQueueNodeRunner;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Node\EraFollowNodeRunner;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Node\EraWatchLiveNodeRunner;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Node\EraWatchVideoNodeRunner;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Node\EraUnfollowNodeRunner;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Pool\ActivityFlowBudget;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Pool\ActivityFlowPool;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Page\EraPageParser;
+use Bhp\Automation\Follow\TemporaryFollowStore;
+use Bhp\Automation\Follow\UnfollowQueueStore;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Runtime\ActivityLotteryClock;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Runtime\ActivityLotteryRuntime;
+use Bhp\Plugin\Builtin\ActivityLottery\Internal\Runtime\ActivityLotteryWindow;
+use Bhp\Remote\RemoteResourceResolver;
+use Bhp\Scheduler\TaskResult;
+
+final class ActivityLotteryPlugin extends BasePlugin implements PluginTaskInterface
+{
+    private const MAX_FLOWS_PER_TICK = 4;
+    private const MAX_STEPS_PER_TICK = 6;
+    private const MAX_RUNTIME_MS_PER_TICK = 3000;
+
+    private ?ActivityLotteryRuntime $runtimeInstance = null;
+
+    /**
+     * 初始化 ActivityLotteryPlugin
+     * @param Plugin $plugin
+     */
+    public function __construct(Plugin &$plugin)
+    {
+        $this->bootPlugin($plugin, true);
+    }
+
+    /**
+     * 执行一次任务
+     * @return TaskResult
+     */
+    public function runOnce(): TaskResult
+    {
+        if (!$this->enabled('activity_lottery')) {
+            return TaskResult::keepSchedule();
+        }
+
+        return $this->runtime()->tick();
+    }
+
+    /**
+     * 处理运行时
+     * @return ActivityLotteryRuntime
+     */
+    protected function runtime(): ActivityLotteryRuntime
+    {
+        if ($this->runtimeInstance instanceof ActivityLotteryRuntime) {
+            return $this->runtimeInstance;
+        }
+
+        $logger = function (string $level, string $message, array $context = []): void {
+            $context = array_replace(['caller' => 'ActivityLottery'], $context);
+            switch (strtolower(trim($level))) {
+                case 'warning':
+                    $this->appContext()->log()->recordWarning($message, $context);
+                    return;
+                case 'notice':
+                    $this->appContext()->log()->recordNotice($message, $context);
+                    return;
+                case 'error':
+                    $this->appContext()->log()->recordError($message, $context);
+                    return;
+                case 'debug':
+                    $this->appContext()->log()->recordDebug($message, $context);
+                    return;
+                default:
+                    $this->appContext()->log()->recordInfo($message, $context);
+                    return;
+            }
+        };
+        $request = $this->appContext()->request();
+        $remoteCatalogFetcher = fn (string $url): string => $request->getText('other', $url);
+        $pcPageFetcher = fn (string $url): string => $request->getText('pc', $url, [], [
+            'Accept-Encoding' => 'identity',
+            'Origin' => 'https://live.bilibili.com',
+            'Referer' => $url,
+        ]);
+        $noticePusher = function (string $channel, string $message): void {
+            $this->notify($channel, $message);
+        };
+        $activityGateway = new \Bhp\Plugin\Builtin\ActivityLottery\Internal\Gateway\ActivityLotteryGateway(
+            pageHtmlFetcher: $remoteCatalogFetcher,
+            noticePusher: $noticePusher,
+        );
+        $userAgentResolver = fn (): string => (string)$this->appContext()->device('platform.headers.pc_ua');
+        $activityApi = new ApiActivity($request);
+        $missionApi = new ApiMission($request);
+        $taskApi = new EraTaskApi($request);
+        $playerApi = new ApiPlayer($request);
+        $topicApi = new ApiTopic($request);
+        $liveIndexApi = new ApiIndex($request);
+        $liveTraceApi = new ApiTrace($request);
+        $liveListApi = new ApiList($request);
+        $liveRecommendApi = new ApiRecommend($request);
+        $relationApi = new ApiRelation($this->appContext()->request());
+        $drawGateway = new \Bhp\Plugin\Builtin\ActivityLottery\Internal\Gateway\DrawGateway($activityApi);
+        $eraTaskGateway = new \Bhp\Plugin\Builtin\ActivityLottery\Internal\Gateway\EraTaskGateway($missionApi);
+        $taskProgressGateway = new \Bhp\Plugin\Builtin\ActivityLottery\Internal\Gateway\EraTaskProgressGateway($taskApi);
+        $watchLiveGateway = new WatchLiveGateway(
+            apiList: $liveListApi,
+            apiRecommend: $liveRecommendApi,
+            apiIndex: $liveIndexApi,
+            watchService: new LiveWatchService($liveIndexApi, $liveTraceApi, $userAgentResolver),
+            areaTagPageFetcher: $pcPageFetcher,
+            logger: $logger,
+        );
+        $watchVideoGateway = new WatchVideoGateway(
+            apiPlayer: $playerApi,
+            apiTopic: $topicApi,
+            watchService: new VideoWatchService(
+                apiWatch: new ApiWatch($this->appContext()->request()),
+            ),
+        );
+        $windowStartAt = $this->pluginWindowStartAt();
+        $windowEndAt = $this->pluginWindowEndAt();
+        $definition = $this->pluginDefinition();
+        $useTestCatalog = (bool)($definition['use_test_catalog'] ?? false);
+        $taskEndAt = (string)($definition['task_end'] ?? '23:00:00');
+        $drawStartAt = (string)($definition['draw_start'] ?? '00:00:00');
+        $drawEndAt = (string)($definition['draw_end'] ?? '01:00:00');
+        $cleanupStartAt = (string)($definition['cleanup_start'] ?? $taskEndAt);
+        $cleanupEndAt = (string)($definition['cleanup_end'] ?? '00:00:00');
+        $cacheDatabasePath = rtrim(str_replace('\\', '/', $this->appContext()->cachePath()), '/') . '/cache.sqlite3';
+        $accountKey = $this->uid();
+        $temporaryFollowStore = new TemporaryFollowStore($cacheDatabasePath, 'ActivityLottery');
+        $unfollowQueueStore = new UnfollowQueueStore($cacheDatabasePath, 'ActivityLottery');
+        if ($useTestCatalog) {
+            $sources = [
+                new LocalCatalogSource($this->activityInfosLocalPath(true, $logger)),
+            ];
+        } else {
+            $remoteResourceResolver = new RemoteResourceResolver($this->appContext());
+            $remoteCatalogUrls = $remoteResourceResolver->resourceRawUrls('plugins/ActivityLottery/catalog.json');
+            $sources = [
+                new RemoteCatalogSource(
+                    $remoteCatalogUrls,
+                    true,
+                    new LocalCatalogSource($this->activityInfosLocalPath()),
+                    $remoteCatalogFetcher,
+                ),
+            ];
+        }
+
+        $this->runtimeInstance = new ActivityLotteryRuntime(
+            new ActivityCatalogLoader($sources, new ActivityCatalogValidator($logger), 86400),
+            new ActivityFlowStore(
+                $cacheDatabasePath,
+                'ActivityLottery',
+            ),
+            new ActivityLotteryWindow($windowStartAt, $windowEndAt),
+            $windowStartAt,
+            $windowEndAt,
+            [
+                new \Bhp\Plugin\Builtin\ActivityLottery\Internal\Node\LoadActivitySnapshotNodeRunner($activityGateway),
+                new \Bhp\Plugin\Builtin\ActivityLottery\Internal\Node\ParseEraPageNodeRunner(
+                    taskProgressGateway: $taskProgressGateway,
+                    pageParser: new EraPageParser(
+                        linkedPageHtmlFetcher: static fn (string $url): string => $activityGateway->fetchActivityPageHtml($url),
+                    ),
+                ),
+                new \Bhp\Plugin\Builtin\ActivityLottery\Internal\Node\EraShareNodeRunner($activityApi),
+                new EraFollowNodeRunner(
+                    apiRelation: $relationApi,
+                    temporaryFollowStore: $temporaryFollowStore,
+                    unfollowQueueStore: $unfollowQueueStore,
+                    accountKey: $accountKey,
+                ),
+                new EraUnfollowNodeRunner(apiRelation: $relationApi),
+                new CleanupUnfollowQueueNodeRunner(
+                    queueStore: $unfollowQueueStore,
+                    accountKey: $accountKey,
+                    apiRelation: $relationApi,
+                    temporaryFollowStore: $temporaryFollowStore,
+                ),
+                new \Bhp\Plugin\Builtin\ActivityLottery\Internal\Node\EraClaimRewardNodeRunner($eraTaskGateway),
+                new EraWatchVideoNodeRunner('era_task_watch_video_fixed', $watchVideoGateway),
+                new EraWatchVideoNodeRunner('era_task_watch_video_topic', $watchVideoGateway),
+                new EraWatchLiveNodeRunner($watchLiveGateway),
+                new \Bhp\Plugin\Builtin\ActivityLottery\Internal\Node\RefreshDrawTimesNodeRunner($drawGateway),
+                new \Bhp\Plugin\Builtin\ActivityLottery\Internal\Node\ExecuteDrawNodeRunner($drawGateway),
+                new \Bhp\Plugin\Builtin\ActivityLottery\Internal\Node\NotifyDrawResultNodeRunner($activityGateway),
+                new \Bhp\Plugin\Builtin\ActivityLottery\Internal\Node\FinalClaimRewardNodeRunner($eraTaskGateway),
+            ],
+            new ActivityFlowPlanner(),
+            new ActivityFlowPool(new ActivityFlowBudget(
+                self::MAX_FLOWS_PER_TICK,
+                self::MAX_STEPS_PER_TICK,
+                self::MAX_RUNTIME_MS_PER_TICK,
+            )),
+            new ActivityLotteryClock(),
+            $logger,
+            new ActivityLotteryWindow($windowStartAt, $taskEndAt),
+            new ActivityLotteryWindow($drawStartAt, $drawEndAt),
+            $temporaryFollowStore,
+            $unfollowQueueStore,
+            $accountKey,
+            new ActivityLotteryWindow($cleanupStartAt, $cleanupEndAt),
+        );
+
+        return $this->runtimeInstance;
+    }
+
+    /**
+     * 处理activityInfosLocalPath
+     * @return string
+     */
+    private function activityInfosLocalPath(bool $useTestCatalog = false, ?callable $logger = null): string
+    {
+        $basePath = rtrim(str_replace('\\', '/', $this->appContext()->appRoot()), '/') . '/resources/plugins/ActivityLottery';
+        if (!$useTestCatalog) {
+            return $basePath . '/catalog.json';
+        }
+
+        $testPath = $basePath . '/catalog_test.json';
+        if (is_file($testPath)) {
+            return $testPath;
+        }
+
+        if (is_callable($logger)) {
+            $logger('warning', 'ActivityLottery 测试目录文件不存在，已回退到 catalog.json', [
+                'catalog_path' => $testPath,
+            ]);
+        }
+
+        return $basePath . '/catalog.json';
+    }
+}

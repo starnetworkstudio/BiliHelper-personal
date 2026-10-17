@@ -1,0 +1,68 @@
+<?php declare(strict_types=1);
+
+namespace Bhp\Plugin\Builtin\ActivityInfoUpdate;
+
+use Bhp\Console\Cli\RuntimeException as CliRuntimeException;
+use Bhp\Plugin\BasePlugin;
+use Bhp\Plugin\Plugin;
+use Bhp\Plugin\Builtin\ActivityInfoUpdate\Internal\ActivityInfoUpdateRunner;
+
+final class ActivityInfoUpdatePlugin extends BasePlugin
+{
+
+    /**
+     * 初始化 ActivityInfoUpdatePlugin
+     * @param Plugin $plugin
+     */
+    public function __construct(Plugin &$plugin)
+    {
+        $this->bootPlugin($plugin, false);
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     * @param string[] $argv
+     */
+    public function execute(array $options = [], array $argv = []): void
+    {
+        $resolved = $this->resolveOptionsFromArgv($argv);
+        $result = $this->runner()->update($resolved['file']);
+
+        $this->info("活动索引: 输出文件 {$result['path']}");
+    }
+
+    /**
+     * @param string[] $argv
+     * @return array{file:?string}
+     */
+    private function resolveOptionsFromArgv(array $argv): array
+    {
+        $file = null;
+        $count = count($argv);
+        for ($index = 0; $index < $count; $index++) {
+            $token = (string)$argv[$index];
+            if (($token === '--file' || $token === '-f') && isset($argv[$index + 1])) {
+                $file = (string)$argv[$index + 1];
+                $index++;
+                continue;
+            }
+
+            if ($token === '--urls' || $token === '-u') {
+                throw new CliRuntimeException('ActivityInfoUpdate 已移除 --urls 参数，请改用 --file');
+            }
+        }
+
+        return [
+            'file' => $file !== null && trim($file) !== '' ? $file : null,
+        ];
+    }
+
+    /**
+     * 处理runner
+     * @return ActivityInfoUpdateRunner
+     */
+    private function runner(): ActivityInfoUpdateRunner
+    {
+        return new ActivityInfoUpdateRunner($this->appContext());
+    }
+}

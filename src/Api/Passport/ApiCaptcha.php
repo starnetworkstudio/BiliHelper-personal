@@ -1,73 +1,92 @@
 <?php declare(strict_types=1);
 
-/**
- *  Website: https://mudew.com/
- *  Author: Lkeme
- *  License: The MIT License
- *  Email: Useri@live.cn
- *  Updated: 2018 ~ 2026
- *
- *   _____   _   _       _   _   _   _____   _       _____   _____   _____
- *  |  _  \ | | | |     | | | | | | | ____| | |     |  _  \ | ____| |  _  \ &   ／l、
- *  | |_| | | | | |     | | | |_| | | |__   | |     | |_| | | |__   | |_| |   （ﾟ､ ｡ ７
- *  |  _  { | | | |     | | |  _  | |  __|  | |     |  ___/ |  __|  |  _  /  　 \、ﾞ ~ヽ   *
- *  | |_| | | | | |___  | | | | | | | |___  | |___  | |     | |___  | | \ \   　じしf_, )ノ
- *  |_____/ |_| |_____| |_| |_| |_| |_____| |_____| |_|     |_____| |_|  \_\
- */
-
 namespace Bhp\Api\Passport;
 
+use Bhp\Api\Support\AbstractApiClient;
 use Bhp\Request\Request;
-use Bhp\Sign\Sign;
 
-class ApiCaptcha
+class ApiCaptcha extends AbstractApiClient
 {
     /**
-     * 获取验证码
-     * @param int $plat
-     * @return mixed
+     * 初始化 ApiCaptcha
+     * @param Request $request
      */
-    public static function combine(int $plat = 3): array
-    {
-        $url = 'https://passport.bilibili.com/web/captcha/combine';
-        $payload = [
-            'plat' => $plat
-        ];
-        // {"code":0,"data":{"result":{"success":1,"gt":"b6e5b7fad7ecd37f465838689732e788","challenge":"88148a764f94e5923564b356a69277fc","key":"230509df5ce048ca9bf29e1ee323af30"},"type":1}}
-
-        return Request::getJson(true, 'other', $url, $payload);
+    public function __construct(
+        Request $request,
+    ) {
+        parent::__construct($request);
     }
 
     /**
-     * 识别验证码
-     * @param array $captcha
-     * @return array
+     * @return array<string, mixed>
      */
-    public static function ocr(array $captcha): array
+    public function combine(int $plat = 3): array
     {
-        $url = 'https://captcha-v1.mudew.com:19951/';
-        $payload = [
+        return $this->decodeGet('other', 'https://passport.bilibili.com/web/captcha/combine', [
+            'plat' => $plat,
+        ], [], 'passport.captcha.combine');
+    }
+
+    /**
+     * @param array<string, mixed> $captcha
+     * @return array<string, mixed>
+     */
+    public function ocr(array $captcha): array
+    {
+        return $this->decodePostJson('other', 'https://captcha-v1.mudew.com:19951/', [
             'type' => 'gt3',
             'gt' => $captcha['gt'],
-            "challenge" => $captcha['challenge'],
-            "referer" => "https://passport.bilibili.com/"
-        ];
-        $headers = [
+            'challenge' => $captcha['challenge'],
+            'referer' => 'https://passport.bilibili.com/',
+        ], [
             'Content-Type' => 'application/json',
-        ];
-        return Request::postJson(true, 'other', $url, $payload, $headers);
+        ], 'passport.captcha.ocr');
     }
 
     /**
-     * @param string $challenge
-     * @return array
+     * @return array<string, mixed>
      */
-    public static function fetch(string $challenge): array
+    public function fetch(string $url, string $challenge): array
     {
-        $url = getConf('login_captcha.url') . '/fetch';
-        $payload = [
+        $url = rtrim($url, '/') . '/fetch';
+
+        return $this->decodeGet('other', $url, [
             'challenge' => $challenge,
-        ];
-        return Request::getJson(true, 'other', $url, $payload);
+        ], [], 'captcha.fetch', null, 3);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     * @return array<string, mixed>
+     */
+    public function openManualFlow(string $url, array $payload): array
+    {
+        $url = rtrim($url, '/') . '/api/manual-flow/open';
+
+        return $this->decodePost('other', $url, $payload, [], 'captcha.manual_flow.open', null, 3);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function fetchManualFlow(string $url, string $flowId): array
+    {
+        $url = rtrim($url, '/') . '/api/manual-flow';
+
+        return $this->decodeGet('other', $url, [
+            'id' => $flowId,
+        ], [], 'captcha.manual_flow.fetch', null, 3);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function clearManualFlow(string $url, string $flowId): array
+    {
+        $url = rtrim($url, '/') . '/api/manual-flow/clear';
+
+        return $this->decodePost('other', $url, [
+            'id' => $flowId,
+        ], [], 'captcha.manual_flow.clear', null, 3);
     }
 }

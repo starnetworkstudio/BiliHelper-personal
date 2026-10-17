@@ -1,92 +1,87 @@
 <?php declare(strict_types=1);
 
-/**
- *  Website: https://mudew.com/
- *  Author: Lkeme
- *  License: The MIT License
- *  Email: Useri@live.cn
- *  Updated: 2018 ~ 2026
- *
- *   _____   _   _       _   _   _   _____   _       _____   _____   _____
- *  |  _  \ | | | |     | | | | | | | ____| | |     |  _  \ | ____| |  _  \ &   ／l、
- *  | |_| | | | | |     | | | |_| | | |__   | |     | |_| | | |__   | |_| |   （ﾟ､ ｡ ７
- *  |  _  { | | | |     | | |  _  | |  __|  | |     |  ___/ |  __|  |  _  /  　 \、ﾞ ~ヽ   *
- *  | |_| | | | | |___  | | | | | | | |___  | |___  | |     | |___  | | \ \   　じしf_, )ノ
- *  |_____/ |_| |_____| |_| |_| |_| |_____| |_____| |_|     |_____| |_|  \_\
- */
-
 namespace Bhp\Api\Api\X\Activity;
 
+use Bhp\Api\Support\AbstractApiClient;
 use Bhp\Request\Request;
-use Bhp\User\User;
 
-class ApiActivity
+class ApiActivity extends AbstractApiClient
 {
     /**
-     * @param array $info
-     * @param int $num
-     * @return array
+     * 初始化 ApiActivity
+     * @param Request $request
      */
-    public static function doLottery(array $info, int $num = 1): array
+    public function __construct(
+        Request $request,
+    ) {
+        parent::__construct($request);
+    }
+
+    /**
+     * @param array<string, mixed> $info
+     * @return array<string, mixed>
+     */
+    public function doLottery(array $info, int $num = 1): array
     {
-        //
-        $user = User::parseCookie();
-        //
-        $url = 'https://api.bilibili.com/x/lottery/do';
-        $headers = [
-            'origin' => 'https://www.bilibili.com',
-            'referer' => $info['url'],
-        ];
         $payload = [
             'sid' => $info['sid'],
             'num' => $num,
-            'csrf' => $user['csrf'],
+            'page_id' => (string)($info['page_id'] ?? ''),
+            'csrf' => $this->request()->csrfValue(),
         ];
-        // {"code":0,"message":"0","ttl":1,"data":[{"id":0,"mid":123,"ip":0,"num":1,"gift_id":0,"gift_name":"未中奖0","gift_type":0,"img_url":"","type":1,"ctime":123,"cid":0,"extra":{},"award_info":null,"order_no":""}]}
-        return Request::postJson(true, 'pc', $url, $payload, $headers);
+        if (trim((string)($info['gaia_vtoken'] ?? '')) !== '') {
+            $payload['gaia_vtoken'] = trim((string)$info['gaia_vtoken']);
+        }
+
+        return $this->decodePost('pc', 'https://api.bilibili.com/x/lottery/x/do', $payload, [
+            'origin' => 'https://www.bilibili.com',
+            'referer' => (string)$info['url'],
+        ], 'x.lottery.x.do');
     }
 
     /**
-     * @param array $info
-     * @param int $action_type 4 关注  3 分享
-     * @return array
+     * @param array<string, mixed> $info
+     * @return array<string, mixed>
      */
-    public static function addTimes(array $info, int $action_type = 3): array
+    public function addTimes(array $info, int $actionType = 3): array
     {
-        //
-        $user = User::parseCookie();
-        //
-        $url = 'https://api.bilibili.com/x/lottery/addtimes';
-        $headers = [
-            'origin' => 'https://www.bilibili.com',
-            'referer' => $info['url'],
-        ];
-        $payload = [
+        return $this->decodePost('pc', 'https://api.bilibili.com/x/lottery/addtimes', [
             'sid' => $info['sid'],
-            'action_type' => $action_type,
-            'csrf' => $user['csrf'],
-        ];
-        // {"code":0,"message":"0","ttl":1,"data":{"add_num":1}}
-        return Request::postJson(true, 'pc', $url, $payload, $headers);
+            'action_type' => $actionType,
+            'csrf' => $this->request()->csrfValue(),
+        ], [
+            'origin' => 'https://www.bilibili.com',
+            'referer' => (string)$info['url'],
+        ], 'x.lottery.addtimes');
     }
 
     /**
-     * @param array $info
-     * @return array
+     * @param array<string, mixed> $info
+     * @return array<string, mixed>
      */
-    public static function myTimes(array $info): array
+    public function myTimes(array $info): array
     {
-        $url = 'https://api.bilibili.com/x/lottery/mytimes';
-        $headers = [
-            'origin' => 'https://www.bilibili.com',
-            'referer' => $info['url'],
-        ];
-        $payload = [
+        return $this->decodeGet('pc', 'https://api.bilibili.com/x/lottery/x/mytimes', [
             'sid' => $info['sid'],
-        ];
-        // {"code":0,"message":"0","ttl":1,"data":{"times":1,"lottery_type":0,"points":0,"points_per_time":0,"intergral":null}}
-        return Request::getJson(true, 'pc', $url, $payload, $headers);
+        ], [
+            'origin' => 'https://www.bilibili.com',
+            'referer' => (string)$info['url'],
+        ], 'x.lottery.x.mytimes');
     }
 
-
+    /**
+     * @return array<string, mixed>
+     */
+    public function sendPoints(string $taskId, string $counter, string $referer = 'https://www.bilibili.com/'): array
+    {
+        return $this->decodePost('pc', 'https://api.bilibili.com/x/activity/task/send_points', [
+            'activity' => $taskId,
+            'business' => $counter,
+            'timestamp' => (int)round(microtime(true) * 1000),
+            'csrf' => $this->request()->csrfValue(),
+        ], [
+            'origin' => 'https://www.bilibili.com',
+            'referer' => $referer,
+        ], 'x.activity.send_points');
+    }
 }

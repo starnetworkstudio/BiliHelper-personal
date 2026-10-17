@@ -1,57 +1,78 @@
 <?php declare(strict_types=1);
 
-/**
- *  Website: https://mudew.com/
- *  Author: Lkeme
- *  License: The MIT License
- *  Email: Useri@live.cn
- *  Updated: 2018 ~ 2026
- *
- *   _____   _   _       _   _   _   _____   _       _____   _____   _____
- *  |  _  \ | | | |     | | | | | | | ____| | |     |  _  \ | ____| |  _  \ &   ／l、
- *  | |_| | | | | |     | | | |_| | | |__   | |     | |_| | | |__   | |_| |   （ﾟ､ ｡ ７
- *  |  _  { | | | |     | | |  _  | |  __|  | |     |  ___/ |  __|  |  _  /  　 \、ﾞ ~ヽ   *
- *  | |_| | | | | |___  | | | | | | | |___  | |___  | |     | |___  | | \ \   　じしf_, )ノ
- *  |_____/ |_| |_____| |_| |_| |_| |_____| |_____| |_|     |_____| |_|  \_\
- */
-
 namespace Bhp\Api\Api\Pgc\Activity\Deliver;
 
+use Bhp\Api\Support\AbstractApiClient;
 use Bhp\Request\Request;
-use Bhp\Sign\Sign;
-use Bhp\User\User;
 
-class ApiTask
+class ApiTask extends AbstractApiClient
 {
     /**
-     * @var array|string[]
+     * @var array<string, string>
      */
-    protected static array $headers = [
-        'Referer' => 'https://big.bilibili.com/mobile/bigPoint/task'
+    private const HEADERS = [
+        'Referer' => 'https://big.bilibili.com/mobile/bigPoint/task',
     ];
 
     /**
-     * 完成任务  jp：追番页浏览  tv: 影视页浏览
-     * @param string $position
-     * @return array
+     * 初始化 ApiTask
+     * @param Request $request
      */
-    public static function complete(string $position): array
-    {
-        //
-        $user = User::parseCookie();
-        //
-        $url = 'https://api.bilibili.com/pgc/activity/deliver/task/complete';
-        //
-        $payload = [
-            'disable_rcmd' => '0',
-            'position' => $position,
-            'csrf' => $user['csrf'],
-            'statistics' => getDevice('app.bili_a.statistics'),
-        ];
-        //
-        $headers = array_merge([], self::$headers);
-        return Request::postJson(true, 'app', $url, Sign::common($payload), $headers);
+    public function __construct(
+        Request $request,
+    ) {
+        parent::__construct($request);
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function complete(string $position): array
+    {
+        return $this->decodePost('app', 'https://api.bilibili.com/pgc/activity/deliver/task/complete', $this->request()->signCommonPayload([
+            'disable_rcmd' => '0',
+            'position' => $position,
+            'csrf' => $this->request()->csrfValue(),
+        ], true), self::HEADERS, 'pgc.deliver.complete');
+    }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function susWin(): array
+    {
+        return $this->decodePost('app', 'https://api.bilibili.com/pgc/activity/deliver/susWin/receive', $this->request()->signCommonPayload([
+            'csrf' => $this->request()->csrfValue(),
+        ], true), self::HEADERS, 'pgc.deliver.suswin.receive');
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function materialReceive(string $epId, string $seasonId): array
+    {
+        return $this->decodePost('app', 'https://api.bilibili.com/pgc/activity/deliver/material/receive', $this->request()->signCommonPayload([
+            'csrf' => $this->request()->csrfValue(),
+            'spmid' => 'united.player-video-detail.0.0',
+            'season_id' => $seasonId,
+            'activity_code' => '',
+            'ep_id' => $epId,
+            'from_spmid' => 'search.search-result.0.0',
+        ], true), self::HEADERS, 'pgc.deliver.material.receive');
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function completeWatch(string $taskId, string $token, string $taskSign, string $timestamp): array
+    {
+        return $this->decodePost('app', 'https://api.bilibili.com/pgc/activity/deliver/task/complete', $this->request()->signCommonPayload([
+            'disable_rcmd' => '0',
+            'task_id' => $taskId,
+            'token' => $token,
+            'task_sign' => $taskSign,
+            'timestamp' => $timestamp,
+            'csrf' => $this->request()->csrfValue(),
+        ], true), self::HEADERS, 'pgc.deliver.complete.watch');
+    }
 }

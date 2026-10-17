@@ -17,11 +17,42 @@
 
 namespace Bhp\Env;
 
+use Bhp\Console\Cli\RuntimeException as CliRuntimeException;
 use Bhp\Log\Log;
+use Bhp\Profile\ProfileContext;
 use Bhp\Util\Resource\BaseResource;
 
 class Env extends BaseResource
 {
+    /**
+     * 初始化 Env
+     * @param ProfileContext $profileContext
+     * @param Log $log
+     * @param string $filename
+     * @param bool $metadataOnly
+     */
+    public function __construct(
+        private readonly ProfileContext $profileContext,
+        private readonly Log $log,
+        string $filename = 'version.json',
+        private readonly bool $metadataOnly = false,
+    )
+    {
+        set_time_limit(0);
+        date_default_timezone_set('Asia/Shanghai');
+        ini_set('display_errors', 'on');
+        error_reporting(E_ALL);
+        $this->loadResource($filename, 'json');
+        $this->app_name = $this->resource->get('project', 'BiliHelper-personal');
+        $this->app_version = $this->resource->get('version', '0.0.0.000000');
+        $overrideBranch = trim((string)getenv('BRANCH'));
+        $this->app_branch = $overrideBranch !== '' ? $overrideBranch : $this->resource->get('branch', 'master');
+        $this->app_source = $this->resource->get('source', 'https://github.com/lkeme/BiliHelper-personal');
+        if (!$this->metadataOnly) {
+            $this->inspectConfigure()->inspectExtension();
+        }
+    }
+
     /**
      * @var string
      */
@@ -43,41 +74,19 @@ class Env extends BaseResource
     public string $app_source;
 
     /**
-     * @param string $filename
-     * @return void
-     */
-    public function init(string $filename = 'version.json'): void
-    {
-        set_time_limit(0);
-        // header("Content-Type:text/html; charset=utf-8");
-        // ini_set('date.timezone', 'Asia/Shanghai');
-        date_default_timezone_set('Asia/Shanghai');
-        ini_set('display_errors', 'on');
-        error_reporting(E_ALL);
-        //
-        $this->loadResource($filename, 'json');
-        //
-        $this->app_name = $this->resource->get('project', 'BiliHelper-personal');
-        $this->app_version = $this->resource->get('version', '0.0.0.000000');
-        $this->app_branch = $this->resource->get('branch', 'master');
-        $this->app_source = $this->resource->get('source', 'https://github.com/lkeme/BiliHelper-personal');
-        //
-        $this->inspectConfigure()->inspectExtension();
-    }
-
-    /**
      * 检查是否开启
      * @return $this
      */
     protected function inspectExtension(): Env
     {
-        $default_extensions = ['curl', 'openssl', 'sockets', 'json', 'zlib', 'mbstring'];
+        $default_extensions = ['openssl', 'json', 'zlib', 'mbstring', 'sqlite3'];
         foreach ($default_extensions as $extension) {
             if (!extension_loaded($extension)) {
-                Log::error("检查到项目依赖 $extension 扩展未加载。");
-                Log::error("请在 php.ini中启用 $extension 扩展后重试。");
-                Log::error("程序常见问题请移步 $this->app_source 文档部分查看。");
-                failExit("");
+                throw new CliRuntimeException(
+                    "检查到项目依赖 {$extension} 扩展未加载。" . PHP_EOL .
+                    "请在 php.ini 中启用 {$extension} 扩展后重试。" . PHP_EOL .
+                    "程序常见问题请移步 {$this->app_source} 文档部分查看。"
+                );
             }
         }
         return $this;
@@ -89,14 +98,14 @@ class Env extends BaseResource
      */
     protected function inspectConfigure(): Env
     {
-        Log::info("欢迎使用 项目: $this->app_name@$this->app_branch 版本: $this->app_version");
-        Log::info("使用说明请移步 $this->app_source 查看");
+        $this->log->recordInfo("欢迎使用 项目: $this->app_name@$this->app_branch 版本: $this->app_version");
+        $this->log->recordInfo("使用说明请移步 $this->app_source 查看");
 
         if (PHP_SAPI != 'cli') {
-            failExit('Please run this script from command line .');
+            throw new CliRuntimeException('Please run this script from command line .');
         }
-        if (version_compare(PHP_VERSION, '8.1.0', '<')) {
-            failExit('Please upgrade PHP version > 8.1.0 .');
+        if (version_compare(PHP_VERSION, '8.5.0', '<')) {
+            throw new CliRuntimeException('Please upgrade PHP version >= 8.5.0 .');
         }
         return $this;
     }
@@ -108,7 +117,7 @@ class Env extends BaseResource
      */
     protected function getFilePath(string $filename): string
     {
-        return str_replace("\\", "/", APP_RESOURCES_PATH . $filename);
+        return str_replace("\\", "/", $this->profileContext->resourcesPath() . $filename);
     }
 
     /**
@@ -128,9 +137,6 @@ class Env extends BaseResource
         if (!is_file('/proc/self/cgroup') || !preg_match('%^\d+:\w+:/(docker|actions_job)/' . preg_quote(gethostname(), '%') . '\w+%sm', file_get_contents('/proc/self/cgroup'))) {
             return false;
         }
-//        $processStack = explode(PHP_EOL, shell_exec('cat /proc/self/cgroup | grep docker'));
-//        $processStack = array_filter($processStack);
-//        return count($processStack) > 0;
         return true;
     }
 }

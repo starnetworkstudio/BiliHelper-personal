@@ -1,35 +1,35 @@
 <?php declare(strict_types=1);
 
-/**
- *  Website: https://mudew.com/
- *  Author: Lkeme
- *  License: The MIT License
- *  Email: Useri@live.cn
- *  Updated: 2018 ~ 2026
- *
- *   _____   _   _       _   _   _   _____   _       _____   _____   _____
- *  |  _  \ | | | |     | | | | | | | ____| | |     |  _  \ | ____| |  _  \ &   ／l、
- *  | |_| | | | | |     | | | |_| | | |__   | |     | |_| | | |__   | |_| |   （ﾟ､ ｡ ７
- *  |  _  { | | | |     | | |  _  | |  __|  | |     |  ___/ |  __|  |  _  /  　 \、ﾞ ~ヽ   *
- *  | |_| | | | | |___  | | | | | | | |___  | |___  | |     | |___  | | \ \   　じしf_, )ノ
- *  |_____/ |_| |_____| |_| |_| |_| |_____| |_____| |_|     |_____| |_|  \_\
- */
-
 namespace Bhp\Api\Api\X\Player;
 
+use Bhp\Api\Support\AbstractApiClient;
 use Bhp\Request\Request;
 
-class ApiPlayer
+class ApiPlayer extends AbstractApiClient
 {
-    public static function pageList(string $aid): array
-    {
-        $url = 'https://api.bilibili.com/x/player/pagelist';
-        $payload = [
-            'aid' => $aid,
-        ];
-        // {"code":-404,"message":"啥都木有","ttl":1}
-        // {"code":0,"message":"0","ttl":1,"data":[{"cid":123,"page":1,"from":"vupload","part":"","duration":2055,"vid":"","weblink":"","dimension":{"width":480,"height":360,"rotate":0}}]}
-        return Request::getJson(true, 'other', $url, $payload);
+    /**
+     * 初始化 ApiPlayer
+     * @param Request $request
+     */
+    public function __construct(
+        Request $request,
+    ) {
+        parent::__construct($request);
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function pageList(string $aid = '', string $bvid = ''): array
+    {
+        $payload = [];
+        if ($aid !== '') {
+            $payload['aid'] = $aid;
+        }
+        if ($bvid !== '') {
+            $payload['bvid'] = $bvid;
+        }
+
+        return $this->decodeGet('other', 'https://api.bilibili.com/x/player/pagelist', $payload, [], 'x.player.pagelist');
+    }
 }
